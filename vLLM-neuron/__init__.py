@@ -173,9 +173,6 @@ def _patch_qwen3_moe(module):
             )
 
             heads_per_kv = batch_heads // num_kv_heads
-            if heads_per_kv > 1:
-                k_seq = k_seq.repeat_interleave(heads_per_kv, dim=0)
-                v_seq = v_seq.repeat_interleave(heads_per_kv, dim=0)
 
             q_pos = torch.arange(
                 query_length, device=q.device, dtype=torch.int64
@@ -189,10 +186,16 @@ def _patch_qwen3_moe(module):
                     k_pos > (q_pos + prior_length - sliding_window)
                 )
 
-            scores = torch.bmm(
-                q.float() * scale,
-                k_seq.float().transpose(1, 2),
+            q_grouped = (q.float() * scale).reshape(
+                num_kv_heads,
+                heads_per_kv,
+                query_length,
+                head_dim,
             )
+            scores = torch.matmul(
+                q_grouped,
+                k_seq.float().transpose(1, 2).unsqueeze(1),
+            ).reshape(batch_heads, query_length, padded_kv_length)
             scores = scores.masked_fill(
                 ~allowed.unsqueeze(0), float("-inf")
             )
@@ -205,7 +208,15 @@ def _patch_qwen3_moe(module):
             attention_weights = torch.nn.functional.softmax(scores, dim=-1)
             if sink is not None:
                 attention_weights = attention_weights[:, :, :-1]
-            output = torch.bmm(attention_weights, v_seq.float()).to(q.dtype)
+            output = torch.matmul(
+                attention_weights.reshape(
+                    num_kv_heads,
+                    heads_per_kv,
+                    query_length,
+                    padded_kv_length,
+                ),
+                v_seq.float().unsqueeze(1),
+            ).reshape(batch_heads, query_length, head_dim).to(q.dtype)
             return output.transpose(1, 2) if tp_out else output
 
         _torch_segmented_attention_without_redundant_mask._opt_redundant_mask_patched = True
