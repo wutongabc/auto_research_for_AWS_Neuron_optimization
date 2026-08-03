@@ -37,7 +37,7 @@ SERVE_ARGS=(
     --host "$HOST"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
-    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}}"
+    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}], \"on_device_sampling_config\": {\"all_greedy\": ${ON_DEVICE_ALL_GREEDY}}}}"
 )
 
 # Optional: chunked prefill
