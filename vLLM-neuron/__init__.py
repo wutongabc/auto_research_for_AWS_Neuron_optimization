@@ -160,7 +160,7 @@ def _patch_qwen3_moe(module):
             batch_heads, query_length, head_dim = q.shape
             num_kv_heads = k_cache.shape[1]
             padded_kv_length = block_tables.shape[1] * block_size
-            prior_length = prior_tokens.reshape(-1)[0].to(torch.int64)
+            prior_length = prior_tokens.reshape(-1)[0].to(torch.int32)
 
             block_ids = block_tables[0].clamp_min(0).to(torch.int64)
             k_blocks = k_cache[block_ids]
@@ -178,10 +178,10 @@ def _patch_qwen3_moe(module):
                 v_seq = v_seq.repeat_interleave(heads_per_kv, dim=0)
 
             q_pos = torch.arange(
-                query_length, device=q.device, dtype=torch.int64
+                query_length, device=q.device, dtype=torch.int32
             ).unsqueeze(1)
             k_pos = torch.arange(
-                padded_kv_length, device=q.device, dtype=torch.int64
+                padded_kv_length, device=q.device, dtype=torch.int32
             ).unsqueeze(0)
             allowed = k_pos <= (q_pos + prior_length)
             if sliding_window is not None and sliding_window > 0:
