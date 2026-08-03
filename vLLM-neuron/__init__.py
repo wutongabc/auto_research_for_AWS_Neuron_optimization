@@ -3,6 +3,7 @@
 
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import PathFinder
+import importlib
 import sys
 
 _UPSTREAM_INIT = "/dev3/zigeng/bc/vllm-neuron/vllm_neuron/__init__.py"
@@ -24,6 +25,54 @@ def _patch_qwen3_moe(module):
 
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
+
+    if not getattr(module.NF.segmented_attention, "_opt_fused_scale_patched", False):
+        segmented_impl = importlib.import_module(
+            "vllm_neuron.functional.attention.attention_segmented_cte"
+        )
+
+        def _segmented_attention_with_kernel_scale(
+            q,
+            k_cache,
+            v_cache,
+            block_tables,
+            prior_tokens,
+            block_size,
+            kv_segment_size,
+            scale=None,
+            tp_q=True,
+            tp_out=False,
+            sliding_window=None,
+            sink=None,
+            fp8_packed=False,
+            k_scale=None,
+            v_scale=None,
+        ):
+            if scale is None:
+                scale = 1.0 / (q.shape[2] ** 0.5)
+            if not tp_q or fp8_packed:
+                raise ValueError("optimized segmented attention expects TP Q and BF16 KV")
+            result = segmented_impl._wrapped_attention_segmented_cte[2](
+                q=q,
+                k_cache=k_cache,
+                v_cache=v_cache,
+                block_tables=block_tables,
+                prior_tokens=prior_tokens,
+                block_size=block_size,
+                prior_seg_size=kv_segment_size,
+                scale=scale,
+                tp_q=True,
+                tp_out=False,
+                sliding_window=sliding_window if sliding_window else None,
+                sink=sink,
+                num_q_heads=q.shape[0],
+                k_scale=k_scale,
+                v_scale=v_scale,
+            )
+            return result.transpose(1, 2) if tp_out else result
+
+        _segmented_attention_with_kernel_scale._opt_fused_scale_patched = True
+        module.NF.segmented_attention = _segmented_attention_with_kernel_scale
 
     if not getattr(module.NF.moe_cte, "_opt_skip_weight_patched", False):
         original_moe_cte = module.NF.moe_cte
