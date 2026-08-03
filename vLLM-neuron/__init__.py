@@ -30,6 +30,7 @@ def _patch_qwen3_moe(module):
 
         def _moe_cte_skip_padding_weights(*args, **kwargs):
             kwargs.setdefault("skip_weight", True)
+            kwargs.setdefault("n_block_per_iter", 2)
             return original_moe_cte(*args, **kwargs)
 
         _moe_cte_skip_padding_weights._opt_skip_weight_patched = True
