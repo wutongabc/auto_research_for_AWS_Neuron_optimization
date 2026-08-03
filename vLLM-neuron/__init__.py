@@ -42,7 +42,9 @@ def _patch_qwen3_moe(module):
             router_weights=self.router_weight.T,
             top_k=self.top_k,
             router_bias=None,
-            activation="softmax",
+            # The NKI affinities are used only as a Top-K mask below. Sigmoid
+            # preserves the Top-K ordering while avoiding an unused softmax.
+            activation="sigmoid",
             computation_dtype=torch.float32,
             router_computation_order=(
                 module.RouterComputationOrder.PRENORM_LINEAR_TOPK_ACT_SCATTER
