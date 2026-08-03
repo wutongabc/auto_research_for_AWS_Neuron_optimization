@@ -25,26 +25,6 @@ def _patch_qwen3_moe(module):
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
 
-    if not getattr(module.F.linear, "_opt_bf16_router_patched", False):
-        original_linear = module.F.linear
-
-        def _linear_with_bf16_router(input, weight, bias=None):
-            if (
-                input.dtype == module.torch.float32
-                and weight.dtype == module.torch.float32
-                and input.shape[-1] == 2048
-                and weight.shape == (128, 2048)
-            ):
-                return original_linear(
-                    input.to(module.torch.bfloat16),
-                    weight.to(module.torch.bfloat16),
-                    bias,
-                )
-            return original_linear(input, weight, bias)
-
-        _linear_with_bf16_router._opt_bf16_router_patched = True
-        module.F.linear = _linear_with_bf16_router
-
     if not getattr(module.NF.moe_cte, "_opt_skip_weight_patched", False):
         original_moe_cte = module.NF.moe_cte
 
