@@ -48,7 +48,7 @@ def _patch_qwen3_moe(module):
                 module.RouterComputationOrder.PRENORM_LINEAR_TOPK_ACT_SCATTER
             ),
             skip_store_router_logits=False,
-            shard_on_tokens=False,
+            shard_on_tokens=True,
             x_hbm_layout=1,
             x_sb_layout=0,
             use_column_tiling=False,
