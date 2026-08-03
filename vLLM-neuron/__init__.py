@@ -30,6 +30,7 @@ def _patch_qwen3_moe(module):
     router_impl = importlib.import_module(
         "vllm_neuron.functional.moe.router"
     )
+    router_topk_nki = router_impl.wrap_nki(router_impl.router_topk_jit)
 
     def _forward_prefill_with_nki_router(self, hidden_states, positions):
         if self.norm_topk_prob:
@@ -37,31 +38,40 @@ def _patch_qwen3_moe(module):
 
         torch = module.torch
         hidden_states = self.post_attention_layernorm(hidden_states)
-        nki_affinities, router_logits = router_impl._nki_router_impl(
-            hidden_states=hidden_states,
-            router_weights=self.router_weight.T,
-            top_k=self.top_k,
-            router_bias=None,
-            # The NKI affinities are used only as a Top-K mask below. Sigmoid
-            # preserves the Top-K ordering while avoiding an unused softmax.
-            activation="sigmoid",
-            computation_dtype=torch.float32,
-            router_computation_order=(
-                module.RouterComputationOrder.PRENORM_LINEAR_TOPK_ACT_SCATTER
-            ),
-            skip_store_router_logits=False,
-            shard_on_tokens=True,
+        token_count = hidden_states.shape[0]
+        expert_count = self.router_weight.shape[0]
+        router_logits = torch.zeros(
+            token_count,
+            expert_count,
+            dtype=torch.float32,
+            device=hidden_states.device,
+        )
+        expert_affinities = torch.zeros_like(router_logits)
+        expert_indices = torch.zeros(
+            token_count,
+            self.top_k,
+            dtype=torch.int32,
+            device=hidden_states.device,
+        )
+        _, _, expert_affinities = router_topk_nki[2](
+            x=hidden_states,
+            w=self.router_weight.T,
+            w_bias=None,
+            router_logits=router_logits,
+            expert_affinities=expert_affinities,
+            expert_index=expert_indices,
+            act_fn=router_impl.RouterActFnType.SOFTMAX,
+            k=self.top_k,
             x_hbm_layout=1,
             x_sb_layout=0,
-            use_column_tiling=False,
+            router_pre_norm=True,
+            norm_topk_prob=False,
             use_indirect_dma_scatter=False,
+            use_column_tiling=False,
+            shard_on_tokens=True,
+            skip_store_router_logits=True,
+            skip_store_expert_index=True,
             use_PE_broadcast_w_bias=False,
-        )
-        router_probs = module.F.softmax(router_logits, dim=-1)
-        expert_affinities = torch.where(
-            nki_affinities != 0,
-            router_probs,
-            torch.zeros_like(router_probs),
         )
         if self.world_size > 1:
             expert_affinities = self.tp_group.all_gather(
