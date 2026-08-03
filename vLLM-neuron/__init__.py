@@ -3,7 +3,6 @@
 
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import PathFinder
-import importlib
 import sys
 
 _UPSTREAM_INIT = "/dev3/zigeng/bc/vllm-neuron/vllm_neuron/__init__.py"
@@ -25,87 +24,6 @@ def _patch_qwen3_moe(module):
 
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
-
-    segmented_impl = importlib.import_module(
-        "vllm_neuron.functional.attention.attention_segmented_cte"
-    )
-    if segmented_impl._wrapped_attention_segmented_cte is None:
-        from nkilib.core.attention.attention_segmented_cte import (
-            attention_segmented_cte,
-        )
-
-        segmented_impl._SEGMENTED_KERNEL_HAS_FP8_PACKED = True
-        segmented_kernel = segmented_impl.nki.jit()(attention_segmented_cte)
-        segmented_impl._wrapped_attention_segmented_cte = segmented_impl.wrap_nki(
-            segmented_kernel
-        )
-
-    if not getattr(module.NF.segmented_attention, "_opt_hybrid_patched", False):
-        torch = segmented_impl.torch
-        nki_segmented_attention = module.NF.segmented_attention
-        fallback_attention = segmented_impl._torch_segmented_attention_impl
-
-        def _hybrid_segmented_attention(
-            q,
-            k_cache,
-            v_cache,
-            block_tables,
-            prior_tokens,
-            block_size,
-            kv_segment_size,
-            scale=None,
-            tp_q=True,
-            tp_out=False,
-            sliding_window=None,
-            sink=None,
-            fp8_packed=False,
-            k_scale=None,
-            v_scale=None,
-        ):
-            def _short_context(q_t, k_t, v_t, blocks_t, prior_t):
-                return nki_segmented_attention(
-                    q_t,
-                    k_cache=k_t,
-                    v_cache=v_t,
-                    block_tables=blocks_t,
-                    prior_tokens=prior_t,
-                    block_size=block_size,
-                    kv_segment_size=kv_segment_size,
-                    scale=scale,
-                    tp_q=tp_q,
-                    tp_out=tp_out,
-                    sliding_window=sliding_window,
-                    sink=sink,
-                    fp8_packed=fp8_packed,
-                    k_scale=k_scale,
-                    v_scale=v_scale,
-                )
-
-            def _long_context(q_t, k_t, v_t, blocks_t, prior_t):
-                return fallback_attention(
-                    q=q_t,
-                    k_cache=k_t,
-                    v_cache=v_t,
-                    block_tables=blocks_t,
-                    prior_tokens=prior_t,
-                    block_size=block_size,
-                    kv_segment_size=kv_segment_size,
-                    scale=scale,
-                    tp_q=tp_q,
-                    tp_out=tp_out,
-                    sliding_window=sliding_window,
-                    sink=sink,
-                )
-
-            return torch.cond(
-                prior_tokens.reshape(-1)[0] < 9216,
-                _short_context,
-                _long_context,
-                (q, k_cache, v_cache, block_tables, prior_tokens),
-            )
-
-        _hybrid_segmented_attention._opt_hybrid_patched = True
-        module.NF.segmented_attention = _hybrid_segmented_attention
 
     if not getattr(module.NF.moe_cte, "_opt_skip_weight_patched", False):
         original_moe_cte = module.NF.moe_cte
