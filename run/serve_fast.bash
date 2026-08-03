@@ -55,7 +55,7 @@ echo "  FP8 experts: $VLLM_NEURON_FP8_EXPERT_WEIGHTS"
 echo ""
 
 # Launch vLLM
-python -m vllm_neuron.entrypoints.openai.api_server "${SERVE_ARGS[@]}" &
+python -m vllm.entrypoints.openai.api_server "${SERVE_ARGS[@]}" &
 VLLM_PID=$!
 
 # Wait for server ready (check health endpoint)
