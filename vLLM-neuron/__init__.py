@@ -129,6 +129,90 @@ def _patch_qwen3_moe(module):
 
     cls.forward_prefill = _forward_prefill_with_nki_router
 
+    segmented_impl = importlib.import_module(
+        "vllm_neuron.functional.attention.attention_segmented_cte"
+    )
+    if not getattr(
+        segmented_impl._torch_segmented_attention_impl,
+        "_opt_redundant_mask_patched",
+        False,
+    ):
+
+        def _torch_segmented_attention_without_redundant_mask(
+            q,
+            k_cache,
+            v_cache,
+            block_tables,
+            prior_tokens,
+            block_size,
+            kv_segment_size,
+            scale,
+            tp_q=True,
+            tp_out=False,
+            sliding_window=None,
+            sink=None,
+        ):
+            del kv_segment_size
+            torch = module.torch
+            if not tp_q:
+                q = q.transpose(1, 2)
+
+            batch_heads, query_length, head_dim = q.shape
+            num_kv_heads = k_cache.shape[1]
+            padded_kv_length = block_tables.shape[1] * block_size
+            prior_length = prior_tokens.reshape(-1)[0].to(torch.int64)
+
+            block_ids = block_tables[0].clamp_min(0).to(torch.int64)
+            k_blocks = k_cache[block_ids]
+            v_blocks = v_cache[block_ids]
+            k_seq = k_blocks.permute(1, 0, 2, 3).reshape(
+                num_kv_heads, padded_kv_length, head_dim
+            )
+            v_seq = v_blocks.permute(1, 0, 2, 3).reshape(
+                num_kv_heads, padded_kv_length, head_dim
+            )
+
+            heads_per_kv = batch_heads // num_kv_heads
+            if heads_per_kv > 1:
+                k_seq = k_seq.repeat_interleave(heads_per_kv, dim=0)
+                v_seq = v_seq.repeat_interleave(heads_per_kv, dim=0)
+
+            q_pos = torch.arange(
+                query_length, device=q.device, dtype=torch.int64
+            ).unsqueeze(1)
+            k_pos = torch.arange(
+                padded_kv_length, device=q.device, dtype=torch.int64
+            ).unsqueeze(0)
+            allowed = k_pos <= (q_pos + prior_length)
+            if sliding_window is not None and sliding_window > 0:
+                allowed = allowed & (
+                    k_pos > (q_pos + prior_length - sliding_window)
+                )
+
+            scores = torch.bmm(
+                q.float() * scale,
+                k_seq.float().transpose(1, 2),
+            )
+            scores = scores.masked_fill(
+                ~allowed.unsqueeze(0), float("-inf")
+            )
+            if sink is not None:
+                sink_values = sink.float().reshape(
+                    batch_heads, 1, 1
+                ).expand(batch_heads, query_length, 1)
+                scores = torch.cat([scores, sink_values], dim=-1)
+
+            attention_weights = torch.nn.functional.softmax(scores, dim=-1)
+            if sink is not None:
+                attention_weights = attention_weights[:, :, :-1]
+            output = torch.bmm(attention_weights, v_seq.float()).to(q.dtype)
+            return output.transpose(1, 2) if tp_out else output
+
+        _torch_segmented_attention_without_redundant_mask._opt_redundant_mask_patched = True
+        segmented_impl._torch_segmented_attention_impl = (
+            _torch_segmented_attention_without_redundant_mask
+        )
+
     if not getattr(module.NF.segmented_attention, "_opt_q_scale_patched", False):
         original_segmented_attention = module.NF.segmented_attention
 
