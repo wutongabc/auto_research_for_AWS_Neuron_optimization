@@ -62,7 +62,7 @@ def _patch_qwen3_moe(module):
             nki_affinities != 0,
             router_probs,
             torch.zeros_like(router_probs),
-        ).to(torch.bfloat16)
+        )
         if self.world_size > 1:
             expert_affinities = self.tp_group.all_gather(
                 expert_affinities, dim=0
