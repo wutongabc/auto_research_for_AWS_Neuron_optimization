@@ -43,7 +43,7 @@ def _patch_qwen3_moe(module):
             top_k=self.top_k,
             router_bias=None,
             activation="softmax",
-            computation_dtype=torch.bfloat16,
+            computation_dtype=torch.float32,
             router_computation_order=(
                 module.RouterComputationOrder.PRENORM_LINEAR_TOPK_ACT_SCATTER
             ),
@@ -55,7 +55,7 @@ def _patch_qwen3_moe(module):
             use_indirect_dma_scatter=False,
             use_PE_broadcast_w_bias=False,
         )
-        router_probs = module.F.softmax(router_logits.float(), dim=-1)
+        router_probs = module.F.softmax(router_logits, dim=-1)
         expert_affinities = torch.where(
             nki_affinities != 0,
             router_probs,
