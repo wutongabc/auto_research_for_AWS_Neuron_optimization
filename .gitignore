@@ -1,0 +1,29 @@
+# Compiled models and cache
+local-models/
+*.neff
+*.ntff
+
+# Benchmark outputs (generated)
+benchmark/baseline_logits_*.json
+benchmark/results_*_latest.json
+
+# Logs
+run.log
+run_full.log
+*.log
+
+# Results tracking (untracked, like autoresearch)
+results.tsv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
