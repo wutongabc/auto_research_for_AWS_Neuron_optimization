@@ -52,7 +52,7 @@ def _patch_qwen3_moe(module):
             x_hbm_layout=1,
             x_sb_layout=0,
             use_column_tiling=False,
-            use_indirect_dma_scatter=True,
+            use_indirect_dma_scatter=False,
             use_PE_broadcast_w_bias=False,
         )
         router_probs = module.F.softmax(router_logits, dim=-1)
