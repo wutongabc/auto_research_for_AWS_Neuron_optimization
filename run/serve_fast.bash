@@ -34,12 +34,13 @@ SERVE_ARGS=(
     --port "$PORT"
     --host "$HOST"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
-    --override-neuron-config "{\"context_length_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}"
+    --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
+    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}}"
 )
 
 # Optional: chunked prefill
 if [[ "${ENABLE_CHUNKED_PREFILL:-0}" == "1" ]]; then
-    SERVE_ARGS+=(--enable-chunked-prefill --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
+    SERVE_ARGS+=(--enable-chunked-prefill)
 fi
 
 # Optional: scheduling policy
