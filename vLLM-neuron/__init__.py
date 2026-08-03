@@ -3,6 +3,7 @@
 
 from importlib.abc import Loader, MetaPathFinder
 from importlib.machinery import PathFinder
+import importlib
 import sys
 
 _UPSTREAM_INIT = "/dev3/zigeng/bc/vllm-neuron/vllm_neuron/__init__.py"
@@ -24,6 +25,20 @@ def _patch_qwen3_moe(module):
 
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
+
+    segmented_impl = importlib.import_module(
+        "vllm_neuron.functional.attention.attention_segmented_cte"
+    )
+    if segmented_impl._wrapped_attention_segmented_cte is None:
+        from nkilib.core.attention.attention_segmented_cte import (
+            attention_segmented_cte,
+        )
+
+        segmented_impl._SEGMENTED_KERNEL_HAS_FP8_PACKED = True
+        segmented_kernel = segmented_impl.nki.jit()(attention_segmented_cte)
+        segmented_impl._wrapped_attention_segmented_cte = segmented_impl.wrap_nki(
+            segmented_kernel
+        )
 
     if not getattr(module.NF.moe_cte, "_opt_skip_weight_patched", False):
         original_moe_cte = module.NF.moe_cte
