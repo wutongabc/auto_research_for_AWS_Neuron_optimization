@@ -25,6 +25,16 @@ def _patch_qwen3_moe(module):
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
 
+    if not getattr(module.NF.moe_cte, "_opt_skip_weight_patched", False):
+        original_moe_cte = module.NF.moe_cte
+
+        def _moe_cte_skip_padding_weights(*args, **kwargs):
+            kwargs.setdefault("skip_weight", True)
+            return original_moe_cte(*args, **kwargs)
+
+        _moe_cte_skip_padding_weights._opt_skip_weight_patched = True
+        module.NF.moe_cte = _moe_cte_skip_padding_weights
+
 
 class _ModelPatchLoader(Loader):
     def __init__(self, wrapped):
