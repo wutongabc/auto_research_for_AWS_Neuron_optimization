@@ -25,16 +25,6 @@ def _patch_qwen3_moe(module):
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
 
-    if not getattr(module.NF.moe_cte, "_opt_two_blocks_patched", False):
-        original_moe_cte = module.NF.moe_cte
-
-        def _moe_cte_two_blocks(*args, **kwargs):
-            kwargs.setdefault("n_block_per_iter", 2)
-            return original_moe_cte(*args, **kwargs)
-
-        _moe_cte_two_blocks._opt_two_blocks_patched = True
-        module.NF.moe_cte = _moe_cte_two_blocks
-
 
 class _ModelPatchLoader(Loader):
     def __init__(self, wrapped):
