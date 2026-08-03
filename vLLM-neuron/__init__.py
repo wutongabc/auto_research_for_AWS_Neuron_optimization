@@ -58,11 +58,7 @@ def _patch_qwen3_moe(module):
             use_PE_broadcast_w_bias=False,
         )
         router_probs = module.F.softmax(router_logits, dim=-1)
-        expert_affinities = torch.where(
-            nki_affinities != 0,
-            router_probs,
-            torch.zeros_like(router_probs),
-        )
+        expert_affinities = router_probs * (nki_affinities != 0)
         if self.world_size > 1:
             expert_affinities = self.tp_group.all_gather(
                 expert_affinities, dim=0
