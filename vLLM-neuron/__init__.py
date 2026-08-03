@@ -20,7 +20,7 @@ def _patch_qwen3_moe(module):
 
     def _init_with_smaller_blocks(self, config):
         original_init(self, config)
-        self.block_size = 128
+        self.block_size = 256
 
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
@@ -29,7 +29,8 @@ def _patch_qwen3_moe(module):
         original_moe_cte = module.NF.moe_cte
 
         def _moe_cte_skip_padding_weights(*args, **kwargs):
-            kwargs.setdefault("skip_weight", True)
+            kwargs["skip_weight"] = False
+            kwargs["implementation"] = module.MoECTEImplementation.shard_on_i
             return original_moe_cte(*args, **kwargs)
 
         _moe_cte_skip_padding_weights._opt_skip_weight_patched = True
