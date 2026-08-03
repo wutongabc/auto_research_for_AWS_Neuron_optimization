@@ -20,7 +20,7 @@ def _patch_qwen3_moe(module):
 
     def _init_with_smaller_blocks(self, config):
         original_init(self, config)
-        self.block_size = 256
+        self.block_size = 128
 
     cls.__init__ = _init_with_smaller_blocks
     cls._opt_block_size_patched = True
