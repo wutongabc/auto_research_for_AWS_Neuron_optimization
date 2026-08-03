@@ -64,3 +64,28 @@ if _loaded_model is not None:
     _patch_qwen3_moe(_loaded_model)
 elif not any(isinstance(finder, _ModelPatchFinder) for finder in sys.meta_path):
     sys.meta_path.insert(0, _ModelPatchFinder())
+
+
+_upstream_register = register
+
+
+def register():
+    """Register the platform and enable the model's native EP graph layout."""
+    platform_class = _upstream_register()
+    if platform_class is None:
+        return None
+
+    from vllm_neuron.vllm.platform import NeuronPlatform
+
+    if not getattr(NeuronPlatform, "_opt_force_ep_patched", False):
+        original_check = NeuronPlatform.check_and_update_config.__func__
+
+        def _check_with_expert_parallel(cls, vllm_config):
+            vllm_config.parallel_config.enable_expert_parallel = True
+            return original_check(cls, vllm_config)
+
+        NeuronPlatform.check_and_update_config = classmethod(
+            _check_with_expert_parallel
+        )
+        NeuronPlatform._opt_force_ep_patched = True
+    return platform_class
