@@ -51,7 +51,7 @@ def _patch_qwen3_moe(module):
             shard_on_tokens=True,
             x_hbm_layout=1,
             x_sb_layout=0,
-            use_column_tiling=False,
+            use_column_tiling=True,
             use_indirect_dma_scatter=False,
             use_PE_broadcast_w_bias=False,
         )
