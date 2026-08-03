@@ -50,6 +50,10 @@ if [[ -n "${SCHEDULING_POLICY:-}" ]]; then
     SERVE_ARGS+=(--scheduling-policy "$SCHEDULING_POLICY")
 fi
 
+if [[ "${ASYNC_SCHEDULING:-1}" == "0" ]]; then
+    SERVE_ARGS+=(--no-async-scheduling)
+fi
+
 echo "=== Serving Tongyi-30B-A3B (FAST: TP=$TP_SIZE, ctx=$MAX_MODEL_LEN) ==="
 echo "  Port: $PORT"
 echo "  Buckets: $CONTEXT_LENGTH_BUCKETS"
