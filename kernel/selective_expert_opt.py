@@ -250,9 +250,6 @@ def _selective_expert_moe_tkg(
 
         sbm.open_scope(interleave_degree=memory_safe_degree)
         for expert_k_idx in range(dims.K):
-            if expert_k_idx > 0 and expert_k_idx % memory_safe_degree == 0:
-                sbm.close_scope()
-                sbm.open_scope(interleave_degree=memory_safe_degree)
             sbm.set_name_prefix(f"T{global_token_idx}_K{expert_k_idx}_")
 
             # Use hwdge (scalar_offset) for all weight selections
@@ -465,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
