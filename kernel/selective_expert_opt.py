@@ -369,8 +369,7 @@ def _selective_expert_moe_tkg(
                     op=nl.add,
                 )
 
-            if expert_k_idx + 1 < dims.K:
-                sbm.increment_section()
+            sbm.increment_section()
         sbm.close_scope()
 
     # Save output result
@@ -463,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
