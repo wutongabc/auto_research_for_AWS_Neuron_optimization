@@ -164,6 +164,12 @@ def _selective_expert_moe_tkg(
         buffer=nl.sbuf,
     )
 
+    # Allocate SBUF locations for down result
+    down_output_list = []
+    for expert_k_idx in range(dims.K):
+        down_sb = sbm.alloc_stack((dims.H0, dims.H1_shard), dtype=io_dtype, buffer=nl.sbuf)
+        down_output_list.append(down_sb)
+
     # Allocate SBUF locations for gate/up projection result, for each token
     gate_up_output = sbm.alloc_stack(
         (dims.I0, div_ceil(dims.I, dims.I0), dims.K),
@@ -171,12 +177,6 @@ def _selective_expert_moe_tkg(
         name=f"intermediate_state_sbuf",
         buffer=nl.sbuf,
     )
-
-    # Allocate SBUF locations for down result
-    down_output_list = []
-    for expert_k_idx in range(dims.K):
-        down_sb = sbm.alloc_stack((dims.H0, dims.H1_shard), dtype=io_dtype, buffer=nl.sbuf)
-        down_output_list.append(down_sb)
 
     # Reshape gate_up weights from [E, H, 2, I] to [E, H, 2 * I]
     E, H, i_2, I = gate_up_weights.shape
@@ -462,5 +462,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
