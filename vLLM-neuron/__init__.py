@@ -183,10 +183,10 @@ def _patch_qwen3_moe(module):
             k_pos = torch.arange(
                 padded_kv_length, device=q.device, dtype=torch.int64
             ).unsqueeze(0)
-            disallowed = k_pos > (q_pos + prior_length)
+            allowed = k_pos <= (q_pos + prior_length)
             if sliding_window is not None and sliding_window > 0:
-                disallowed = disallowed | (
-                    k_pos <= (q_pos + prior_length - sliding_window)
+                allowed = allowed & (
+                    k_pos > (q_pos + prior_length - sliding_window)
                 )
 
             scores = torch.bmm(
@@ -194,7 +194,7 @@ def _patch_qwen3_moe(module):
                 k_seq.float().transpose(1, 2),
             )
             scores = scores.masked_fill(
-                disallowed.unsqueeze(0), float("-inf")
+                ~allowed.unsqueeze(0), float("-inf")
             )
             if sink is not None:
                 sink_values = sink.float().reshape(
