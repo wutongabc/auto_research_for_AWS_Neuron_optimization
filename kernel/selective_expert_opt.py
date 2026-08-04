@@ -320,6 +320,13 @@ def _selective_expert_moe_tkg(
                     src=params.quant_params.down_w_scale.slice(dim=0, start=0, end=1).get_view(),
                 )
                 stream_shuffle_broadcast(down_w_dequant_sb, down_w_dequant_sb)
+                if params.expert_params.expert_affinities_scaling_mode == ExpertAffinityScaleMode.POST_SCALE:
+                    nisa.tensor_tensor(
+                        dst=down_w_dequant_sb,
+                        data1=down_w_dequant_sb,
+                        data2=expert_affinity_sb[:, expert_k_idx : expert_k_idx + 1],
+                        op=nl.multiply,
+                    )
                 params.quant_params = MLPQuantizationParameters(
                     quantization_type=QuantizationType.STATIC,
                     gate_w_scale=TensorView(gate_w_dequant_sb),
@@ -351,7 +358,10 @@ def _selective_expert_moe_tkg(
                 sbm=sbm,
             )
 
-            if params.expert_params.expert_affinities_scaling_mode == ExpertAffinityScaleMode.POST_SCALE:
+            if (
+                params.expert_params.expert_affinities_scaling_mode == ExpertAffinityScaleMode.POST_SCALE
+                and initial_mlp_quant_params.quantization_type != QuantizationType.STATIC
+            ):
                 # Apply affinity and accumulate to SB
                 nisa.tensor_scalar(
                     dst=down_sb,
@@ -462,5 +472,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
