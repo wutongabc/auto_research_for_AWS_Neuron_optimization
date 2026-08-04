@@ -17,10 +17,10 @@
 import nki.isa as nisa
 import nki.language as nl
 
-from ...utils.allocator import SbufManager, sizeinbytes
+from ...utils.allocator import SbufManager
 from ...utils.interleave_copy import interleave_copy
 from ...utils.kernel_assert import kernel_assert
-from ...utils.kernel_helpers import div_ceil, resolve_fp8_e4m3_dtype
+from ...utils.kernel_helpers import div_ceil, resolve_fp8_e4m3_dtype, sizeinbytes
 from ...utils.tensor_view import TensorView
 from ...utils.tiled_range import TiledRange
 from .mlp_parameters import MLPParameters, mlpp_has_down_projection_bias
