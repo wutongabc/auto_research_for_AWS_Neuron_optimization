@@ -194,7 +194,7 @@ def _patch_qwen3_moe(module):
                 k_seq.float().transpose(1, 2),
             )
             scores = scores.masked_fill(
-                ~allowed.unsqueeze(0), -3.4028235e38
+                ~allowed.unsqueeze(0), float("-inf")
             )
             if sink is not None:
                 sink_values = sink.float().reshape(
