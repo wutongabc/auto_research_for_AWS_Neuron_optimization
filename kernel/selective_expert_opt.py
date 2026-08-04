@@ -105,7 +105,7 @@ def _selective_expert_moe_tkg(
     # TODO: Calibrate weight tile calculations and remove auto allocation workaround
     H = params.hidden_tensor.shape[-1]
     need_auto_alloc = H >= 16 * 1024 or hidden_in_sbuf
-    sbm = SbufManager(0, 200 * 1024, get_logger("selective_expert_moe_tkg"), use_auto_alloc=need_auto_alloc)
+    sbm = SbufManager(0, 201 * 1024, get_logger("selective_expert_moe_tkg"), use_auto_alloc=need_auto_alloc)
     sbm.open_scope()
 
     io_dtype = params.hidden_tensor.dtype
@@ -462,5 +462,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
