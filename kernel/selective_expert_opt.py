@@ -249,7 +249,6 @@ def _selective_expert_moe_tkg(
         broadcast_token_affinity(expert_affinity_sb, gathered_affinities_sb, global_token_idx, dims, sbm)
 
         sbm.open_scope(interleave_degree=memory_safe_degree)
-        sbm.increment_section()
         for expert_k_idx in range(dims.K):
             sbm.set_name_prefix(f"T{global_token_idx}_K{expert_k_idx}_")
 
@@ -463,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
