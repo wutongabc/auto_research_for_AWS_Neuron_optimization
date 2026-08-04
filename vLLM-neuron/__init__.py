@@ -213,52 +213,6 @@ def _patch_qwen3_moe(module):
             _torch_segmented_attention_without_redundant_mask
         )
 
-    if not getattr(module.NF.segmented_attention, "_opt_q_scale_patched", False):
-        original_segmented_attention = module.NF.segmented_attention
-
-        def _segmented_attention_with_scaled_query(
-            q,
-            k_cache,
-            v_cache,
-            block_tables,
-            prior_tokens,
-            block_size,
-            kv_segment_size,
-            scale=None,
-            tp_q=True,
-            tp_out=False,
-            sliding_window=None,
-            sink=None,
-            fp8_packed=False,
-            k_scale=None,
-            v_scale=None,
-        ):
-            original_dtype = q.dtype
-            if scale is None:
-                head_dim = q.shape[2] if tp_q else q.shape[1]
-                scale = 1.0 / (head_dim**0.5)
-            result = original_segmented_attention(
-                q=q.float() * scale,
-                k_cache=k_cache,
-                v_cache=v_cache,
-                block_tables=block_tables,
-                prior_tokens=prior_tokens,
-                block_size=block_size,
-                kv_segment_size=kv_segment_size,
-                scale=1.0,
-                tp_q=tp_q,
-                tp_out=tp_out,
-                sliding_window=sliding_window,
-                sink=sink,
-                fp8_packed=fp8_packed,
-                k_scale=k_scale,
-                v_scale=v_scale,
-            )
-            return result.to(original_dtype)
-
-        _segmented_attention_with_scaled_query._opt_q_scale_patched = True
-        module.NF.segmented_attention = _segmented_attention_with_scaled_query
-
     if not getattr(module.NF.moe_cte, "_opt_skip_weight_patched", False):
         original_moe_cte = module.NF.moe_cte
 
