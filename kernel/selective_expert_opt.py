@@ -164,13 +164,17 @@ def _selective_expert_moe_tkg(
         buffer=nl.sbuf,
     )
 
-    # Allocate SBUF locations for gate/up projection result, for each token
-    gate_up_output = sbm.alloc_stack(
-        (dims.I0, div_ceil(dims.I, dims.I0), dims.K),
-        dtype=io_dtype,
-        name=f"intermediate_state_sbuf",
-        buffer=nl.sbuf,
-    )
+    # Give every expert an independent gate/up result address so the compiler
+    # does not have to prove non-aliasing between slices of one shared tensor.
+    gate_up_output_list = []
+    for expert_k_idx in range(dims.K):
+        gate_up_output = sbm.alloc_stack(
+            (dims.I0, div_ceil(dims.I, dims.I0), 1),
+            dtype=io_dtype,
+            name=f"intermediate_state_sbuf_{expert_k_idx}",
+            buffer=nl.sbuf,
+        )
+        gate_up_output_list.append(safe_tensor_view(gate_up_output))
 
     # Allocate SBUF locations for down result
     down_output_list = []
@@ -227,7 +231,6 @@ def _selective_expert_moe_tkg(
 
     initial_mlp_quant_params = params.quant_params
     input_sb_tv = safe_tensor_view(input_sb)
-    gate_up_output_tv = safe_tensor_view(gate_up_output)
 
     memory_safe_degree = 6
     if shard_on_T:
@@ -251,6 +254,7 @@ def _selective_expert_moe_tkg(
         sbm.open_scope(interleave_degree=memory_safe_degree)
         for expert_k_idx in range(dims.K):
             sbm.set_name_prefix(f"T{global_token_idx}_K{expert_k_idx}_")
+            gate_up_output_tv = gate_up_output_list[expert_k_idx]
 
             # Use hwdge (scalar_offset) for all weight selections
             expert_id_scalar_offset = expert_idx.ap(
@@ -332,7 +336,7 @@ def _selective_expert_moe_tkg(
 
             gate_tile_info = process_gate_up_projection(
                 hidden=input_sb_tv.slice(dim=1, start=global_token_idx, end=global_token_idx + 1),
-                output=gate_up_output_tv.slice(dim=2, start=expert_k_idx, end=expert_k_idx + 1),
+                output=gate_up_output_tv,
                 params=params,
                 dims=dims,
                 sbm=sbm,
@@ -343,7 +347,7 @@ def _selective_expert_moe_tkg(
             down_sb = down_output_list[expert_k_idx]
             down_sb_view = safe_tensor_view(down_sb)
             process_down_projection(
-                hidden=gate_up_output_tv.slice(dim=2, start=expert_k_idx, end=expert_k_idx + 1),
+                hidden=gate_up_output_tv,
                 output=down_sb_view,
                 params=params,
                 dims=dims,
@@ -462,5 +466,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
