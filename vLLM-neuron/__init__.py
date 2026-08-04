@@ -190,7 +190,7 @@ def _patch_qwen3_moe(module):
                 )
 
             scores = torch.bmm(
-                (q * scale).float(),
+                q.float() * scale,
                 k_seq.float().transpose(1, 2),
             )
             scores = scores.masked_fill(
