@@ -14,7 +14,9 @@ source "$SCRIPT_DIR/config.env"
 TP_SIZE=8
 MAX_MODEL_LEN=131072
 # Segmented prefill uses the validated token bucket from config.env. Context
-# length defaults to max_model_len for the one-token decode after each prefill.
+# buckets cover the scored 66K-126K interval while retaining max_model_len as
+# the implicit fallback.
+DECODE_CONTEXT_LENGTH_BUCKETS="73728,90112,106496,122880"
 
 # Export Neuron env vars
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS}"
@@ -36,7 +38,7 @@ SERVE_ARGS=(
     --host "$HOST"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
-    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}]}}"
+    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}}"
 )
 
 if [[ "${ENABLE_CHUNKED_PREFILL:-0}" == "1" ]]; then
