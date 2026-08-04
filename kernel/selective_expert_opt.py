@@ -349,7 +349,6 @@ def _selective_expert_moe_tkg(
                 dims=dims,
                 gate_tile_info=gate_tile_info,
                 sbm=sbm,
-                use_dge=True,
             )
 
             if params.expert_params.expert_affinities_scaling_mode == ExpertAffinityScaleMode.POST_SCALE:
@@ -463,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
