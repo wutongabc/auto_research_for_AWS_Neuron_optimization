@@ -273,23 +273,24 @@ def process_down_projection(
 
     # ---------------- Allocate Weight Tiles ----------------
     tiles = MLPTKGConstants.calculate_down_tiles(params, dims, gate_tile_info, sbm)
-    # Split the full local-H tile in half while preserving the total ring-buffer
-    # footprint. This gives DGE two addresses to pipeline instead of one.
-    down_HTile = tiles.HTile // 2
-    size_of_w_tile = down_HTile * sizeinbytes(params.down_proj_weights_tensor.dtype)
-    num_required_w_tile = div_ceil(dims.I, dims.I0) * div_ceil(dims.H_per_shard, down_HTile)
-    num_available_w_tile = sbm.get_free_space() // size_of_w_tile
-    num_allocated_w_tile = min(num_required_w_tile, num_available_w_tile)
-    kernel_assert(num_allocated_w_tile > 0, "Not enough memory for split Down projection weights")
-    overlap = gate_tile_info.last_accessed_addr - sbm.get_stack_curr_addr()
-    weight_base_idx = 0
-    if 0 < overlap < num_allocated_w_tile * size_of_w_tile:
-        weight_base_idx = div_ceil(overlap, size_of_w_tile)
-    tiles = MLPTKGConstantsDownTileCounts(
-        HTile=down_HTile,
-        num_allocated_w_tile=num_allocated_w_tile,
-        weight_base_idx=weight_base_idx,
-    )
+    if not sbm.is_auto_alloc():
+        # Split the full local-H tile in half while preserving the total
+        # ring-buffer footprint. This gives DGE two addresses to pipeline.
+        down_HTile = tiles.HTile // 2
+        size_of_w_tile = down_HTile * sizeinbytes(params.down_proj_weights_tensor.dtype)
+        num_required_w_tile = div_ceil(dims.I, dims.I0) * div_ceil(dims.H_per_shard, down_HTile)
+        num_available_w_tile = sbm.get_free_space() // size_of_w_tile
+        num_allocated_w_tile = min(num_required_w_tile, num_available_w_tile)
+        kernel_assert(num_allocated_w_tile > 0, "Not enough memory for split Down projection weights")
+        overlap = gate_tile_info.last_accessed_addr - sbm.get_stack_curr_addr()
+        weight_base_idx = 0
+        if 0 < overlap < num_allocated_w_tile * size_of_w_tile:
+            weight_base_idx = div_ceil(overlap, size_of_w_tile)
+        tiles = MLPTKGConstantsDownTileCounts(
+            HTile=down_HTile,
+            num_allocated_w_tile=num_allocated_w_tile,
+            weight_base_idx=weight_base_idx,
+        )
 
     _fp8_e4m3_tile_dtype = resolve_fp8_e4m3_dtype(params.dtype_mode)
 
