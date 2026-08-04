@@ -229,7 +229,7 @@ def _selective_expert_moe_tkg(
     input_sb_tv = safe_tensor_view(input_sb)
     gate_up_output_tv = safe_tensor_view(gate_up_output)
 
-    memory_safe_degree = 6
+    memory_safe_degree = 7
     if shard_on_T:
         memory_safe_degree = 8 if dims.H * dims.I < 3072 * 1024 else 1
 
@@ -462,5 +462,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
