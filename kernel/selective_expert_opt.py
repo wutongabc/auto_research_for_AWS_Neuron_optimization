@@ -309,11 +309,11 @@ def _selective_expert_moe_tkg(
                     dst=gate_w_dequant_sb[0:1, 0:1],
                     src=params.quant_params.gate_w_scale.slice(dim=0, start=0, end=1).get_view(),
                 )
-                stream_shuffle_broadcast(gate_w_dequant_sb, gate_w_dequant_sb)
                 nisa.dma_copy(
                     dst=up_w_dequant_sb[0:1, 0:1],
                     src=params.quant_params.up_w_scale.slice(dim=0, start=0, end=1).get_view(),
                 )
+                stream_shuffle_broadcast(gate_w_dequant_sb, gate_w_dequant_sb)
                 stream_shuffle_broadcast(up_w_dequant_sb, up_w_dequant_sb)
                 nisa.dma_copy(
                     dst=down_w_dequant_sb[0:1, 0:1],
@@ -462,5 +462,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
