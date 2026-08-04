@@ -289,7 +289,7 @@ class MLPTKGConstants(nl.NKIObject):
             num_required_w_tile = div_ceil(dims.H_per_shard, HTile)
             num_allocated_w_tile = 2
         elif share_memory_scope:
-            HTile = min(dims.H_per_shard, ini_HTile)
+            HTile = ini_HTile
             w_tile_sz = I * (HTile // dims._pmax) * w_dtype_sz
             num_available_w_tile = remaining_space // w_tile_sz
 
@@ -435,3 +435,4 @@ class MLPTKGConstants(nl.NKIObject):
             num_allocated_w_tile=down_num_allocated_w_tile,
             weight_base_idx=weight_base_idx,
         )
+
