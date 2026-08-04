@@ -160,7 +160,7 @@ def _patch_qwen3_moe(module):
             batch_heads, query_length, head_dim = q.shape
             num_kv_heads = k_cache.shape[1]
             padded_kv_length = block_tables.shape[1] * block_size
-            prior_length = prior_tokens.reshape(-1)[0].to(torch.int64)
+            prior_length = prior_tokens[0, 0].to(torch.int64)
 
             block_ids = block_tables[0].clamp_min(0).to(torch.int64)
             k_blocks = k_cache[block_ids]
