@@ -337,6 +337,7 @@ def _selective_expert_moe_tkg(
                 dims=dims,
                 sbm=sbm,
                 share_memory_scope=True,
+                use_dge=True,
             )
 
             # Down projection
@@ -462,5 +463,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
