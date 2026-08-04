@@ -431,15 +431,23 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
     gate_up_in_scale_tv = safe_tensor_view(quant_params.gate_up_in_scale)
     down_in_scale_tv = safe_tensor_view(quant_params.down_in_scale)
 
-    if gate_w_scale_tv is not None:
-        gate_w_scale_view = gate_w_scale_tv.select(dim=0, index=expert_id_offset).select(
-            dim=0, index=GateUpDim.GATE.value
-        )
+    if gate_w_scale_tv is not None and up_w_scale_tv is not None:
+        gate_up_w_scale_view = gate_w_scale_tv.select(dim=0, index=expert_id_offset)
+        gate_w_scale_view = gate_up_w_scale_view.select(dim=0, index=GateUpDim.GATE.value)
         gate_w_scale_view = reshape_scale_for_mlp(gate_w_scale_view)
-
-    if up_w_scale_tv is not None:
-        up_w_scale_view = up_w_scale_tv.select(dim=0, index=expert_id_offset).select(dim=0, index=GateUpDim.UP.value)
+        up_w_scale_view = gate_up_w_scale_view.select(dim=0, index=GateUpDim.UP.value)
         up_w_scale_view = reshape_scale_for_mlp(up_w_scale_view)
+    else:
+        if gate_w_scale_tv is not None:
+            gate_w_scale_view = gate_w_scale_tv.select(dim=0, index=expert_id_offset).select(
+                dim=0, index=GateUpDim.GATE.value
+            )
+            gate_w_scale_view = reshape_scale_for_mlp(gate_w_scale_view)
+        if up_w_scale_tv is not None:
+            up_w_scale_view = up_w_scale_tv.select(dim=0, index=expert_id_offset).select(
+                dim=0, index=GateUpDim.UP.value
+            )
+            up_w_scale_view = reshape_scale_for_mlp(up_w_scale_view)
 
     if down_w_scale_tv is not None:
         down_w_scale_view = down_w_scale_tv.select(dim=0, index=expert_id_offset)
@@ -462,5 +470,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
