@@ -344,7 +344,9 @@ def _selective_expert_moe_tkg(
             down_sb_view = safe_tensor_view(down_sb)
             affinity_scale = None
             if params.expert_params.expert_affinities_scaling_mode == ExpertAffinityScaleMode.POST_SCALE:
-                affinity_scale = safe_tensor_view(expert_affinity_sb[:, expert_k_idx])
+                affinity_scale = safe_tensor_view(expert_affinity_sb).select(
+                    dim=1, index=expert_k_idx
+                )
             process_down_projection(
                 hidden=gate_up_output_tv.slice(dim=2, start=expert_k_idx, end=expert_k_idx + 1),
                 output=down_sb_view,
@@ -458,4 +460,3 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
