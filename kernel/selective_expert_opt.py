@@ -140,10 +140,6 @@ def _selective_expert_moe_tkg(
     params.shard_on_h_disabled = shard_on_T
     dims = MLPTKGConstants.calculate_constants(params)
 
-    memory_safe_degree = 6
-    if shard_on_T:
-        memory_safe_degree = 8 if dims.H * dims.I < 3072 * 1024 else 1
-
     # Load input in shape of [128(H0), T, H//128(H1)]
     if hidden_in_sbuf:
         # Input is already in SBUF
@@ -176,11 +172,9 @@ def _selective_expert_moe_tkg(
         buffer=nl.sbuf,
     )
 
-    # Allocate only one down-result buffer per interleaved expert. Later experts
-    # reuse buffers whose prior values have already been accumulated.
+    # Allocate SBUF locations for down result
     down_output_list = []
-    num_down_buffers = min(dims.K, memory_safe_degree)
-    for expert_k_idx in range(num_down_buffers):
+    for expert_k_idx in range(dims.K):
         down_sb = sbm.alloc_stack((dims.H0, dims.H1_shard), dtype=io_dtype, buffer=nl.sbuf)
         down_output_list.append(down_sb)
 
@@ -234,6 +228,10 @@ def _selective_expert_moe_tkg(
     initial_mlp_quant_params = params.quant_params
     input_sb_tv = safe_tensor_view(input_sb)
     gate_up_output_tv = safe_tensor_view(gate_up_output)
+
+    memory_safe_degree = 6
+    if shard_on_T:
+        memory_safe_degree = 8 if dims.H * dims.I < 3072 * 1024 else 1
 
     # convert dims.T to 1 to compute output by each token
     dims.T = 1
@@ -342,7 +340,7 @@ def _selective_expert_moe_tkg(
             )
 
             # Down projection
-            down_sb = down_output_list[expert_k_idx % num_down_buffers]
+            down_sb = down_output_list[expert_k_idx]
             down_sb_view = safe_tensor_view(down_sb)
             process_down_projection(
                 hidden=gate_up_output_tv.slice(dim=2, start=expert_k_idx, end=expert_k_idx + 1),
@@ -464,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
