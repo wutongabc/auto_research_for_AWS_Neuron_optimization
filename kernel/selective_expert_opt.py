@@ -302,26 +302,29 @@ def _selective_expert_moe_tkg(
                 selection produces a broadcast TensorView over a scalar that DMA
                 can't handle. Load to partition 0 and broadcast on-chip instead.
                 """
-                expert_w_dequant_sb = nl.ndarray((dims._pmax, 3), dtype=nl.float32, buffer=nl.sbuf)
+                gate_w_dequant_sb = nl.ndarray((dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf)
+                up_w_dequant_sb = nl.ndarray((dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf)
+                down_w_dequant_sb = nl.ndarray((dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf)
                 nisa.dma_copy(
-                    dst=expert_w_dequant_sb[0:1, 0:1],
+                    dst=gate_w_dequant_sb[0:1, 0:1],
                     src=params.quant_params.gate_w_scale.slice(dim=0, start=0, end=1).get_view(),
                 )
+                stream_shuffle_broadcast(gate_w_dequant_sb, gate_w_dequant_sb)
                 nisa.dma_copy(
-                    dst=expert_w_dequant_sb[0:1, 1:2],
+                    dst=up_w_dequant_sb[0:1, 0:1],
                     src=params.quant_params.up_w_scale.slice(dim=0, start=0, end=1).get_view(),
                 )
+                stream_shuffle_broadcast(up_w_dequant_sb, up_w_dequant_sb)
                 nisa.dma_copy(
-                    dst=expert_w_dequant_sb[0:1, 2:3],
+                    dst=down_w_dequant_sb[0:1, 0:1],
                     src=params.quant_params.down_w_scale.slice(dim=0, start=0, end=1).get_view(),
                 )
-                stream_shuffle_broadcast(expert_w_dequant_sb, expert_w_dequant_sb)
-                expert_w_dequant_tv = TensorView(expert_w_dequant_sb)
+                stream_shuffle_broadcast(down_w_dequant_sb, down_w_dequant_sb)
                 params.quant_params = MLPQuantizationParameters(
                     quantization_type=QuantizationType.STATIC,
-                    gate_w_scale=expert_w_dequant_tv.slice(dim=1, start=0, end=1),
-                    up_w_scale=expert_w_dequant_tv.slice(dim=1, start=1, end=2),
-                    down_w_scale=expert_w_dequant_tv.slice(dim=1, start=2, end=3),
+                    gate_w_scale=TensorView(gate_w_dequant_sb),
+                    up_w_scale=TensorView(up_w_dequant_sb),
+                    down_w_scale=TensorView(down_w_dequant_sb),
                     gate_up_in_scale=None,
                     down_in_scale=None,
                     clipping_bound=params.quant_params.clipping_bound,
@@ -459,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
