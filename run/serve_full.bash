@@ -13,7 +13,8 @@ source "$SCRIPT_DIR/config.env"
 # Full model overrides
 TP_SIZE=8
 MAX_MODEL_LEN=131072
-CONTEXT_LENGTH_BUCKETS="4096,8192,16384,32768,65536,131072"
+# Segmented prefill uses the validated token bucket from config.env. Context
+# length bucketing applies only to the one-token decode after each prefill.
 DECODE_CONTEXT_LENGTH_BUCKETS="131072"
 
 # Export Neuron env vars
@@ -35,11 +36,12 @@ SERVE_ARGS=(
     --port "$PORT"
     --host "$HOST"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
-    --override-neuron-config "{\"context_length_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}"
+    --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
+    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}}"
 )
 
 if [[ "${ENABLE_CHUNKED_PREFILL:-0}" == "1" ]]; then
-    SERVE_ARGS+=(--enable-chunked-prefill --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS")
+    SERVE_ARGS+=(--enable-chunked-prefill)
 fi
 
 if [[ -n "${SCHEDULING_POLICY:-}" ]]; then
@@ -53,7 +55,7 @@ echo "  KV dtype: $KV_CACHE_DTYPE"
 echo "  FP8 experts: $VLLM_NEURON_FP8_EXPERT_WEIGHTS"
 echo ""
 
-python -m vllm_neuron.entrypoints.openai.api_server "${SERVE_ARGS[@]}" &
+python -m vllm.entrypoints.openai.api_server "${SERVE_ARGS[@]}" &
 VLLM_PID=$!
 
 echo "Waiting for server to be ready..."
@@ -63,6 +65,10 @@ for i in $(seq 1 240); do
         export NEURON_COMPILE_TIME_S=$((COMPILE_END - COMPILE_START))
         echo "Server ready! (compile+load time: ${NEURON_COMPILE_TIME_S}s)"
         break
+    fi
+    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+        wait "$VLLM_PID"
+        exit $?
     fi
     sleep 5
 done
