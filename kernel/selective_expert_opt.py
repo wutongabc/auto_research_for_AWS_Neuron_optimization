@@ -350,6 +350,7 @@ def _selective_expert_moe_tkg(
                 gate_tile_info=gate_tile_info,
                 sbm=sbm,
             )
+            sbm.increment_section()
 
             if params.expert_params.expert_affinities_scaling_mode == ExpertAffinityScaleMode.POST_SCALE:
                 # Apply affinity and accumulate to SB
@@ -368,8 +369,6 @@ def _selective_expert_moe_tkg(
                     data2=down_sb,
                     op=nl.add,
                 )
-
-            sbm.increment_section()
         sbm.close_scope()
 
     # Save output result
@@ -462,5 +461,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
