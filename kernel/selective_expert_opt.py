@@ -302,9 +302,15 @@ def _selective_expert_moe_tkg(
                 selection produces a broadcast TensorView over a scalar that DMA
                 can't handle. Load to partition 0 and broadcast on-chip instead.
                 """
-                gate_w_dequant_sb = nl.ndarray((dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf)
-                up_w_dequant_sb = nl.ndarray((dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf)
-                down_w_dequant_sb = nl.ndarray((dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf)
+                gate_w_dequant_sb = sbm.alloc_stack(
+                    (dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf, name="gate_w_dequant_sb"
+                )
+                up_w_dequant_sb = sbm.alloc_stack(
+                    (dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf, name="up_w_dequant_sb"
+                )
+                down_w_dequant_sb = sbm.alloc_stack(
+                    (dims._pmax, 1), dtype=nl.float32, buffer=nl.sbuf, name="down_w_dequant_sb"
+                )
                 nisa.dma_copy(
                     dst=gate_w_dequant_sb[0:1, 0:1],
                     src=params.quant_params.gate_w_scale.slice(dim=0, start=0, end=1).get_view(),
@@ -462,5 +468,4 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
-
 
