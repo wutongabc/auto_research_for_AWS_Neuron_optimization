@@ -32,7 +32,7 @@ from .mlp_parameters import (
 
 # MLP utils
 from .mlp_tkg_constants import MLPTKGConstants
-from .mlp_tkg_down_projection_opt import process_down_projection
+from .mlp_tkg_down_projection import process_down_projection
 from .mlp_tkg_gate_up_projection import process_gate_up_projection
 from .moe_tkg_utils import (
     broadcast_token_affinity,
@@ -462,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
