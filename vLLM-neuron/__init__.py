@@ -174,12 +174,8 @@ def _patch_qwen3_moe(module):
 
             heads_per_kv = batch_heads // num_kv_heads
             if heads_per_kv > 1:
-                k_seq = k_seq.unsqueeze(1).expand(
-                    -1, heads_per_kv, -1, -1
-                ).reshape(batch_heads, padded_kv_length, head_dim)
-                v_seq = v_seq.unsqueeze(1).expand(
-                    -1, heads_per_kv, -1, -1
-                ).reshape(batch_heads, padded_kv_length, head_dim)
+                k_seq = k_seq.repeat_interleave(heads_per_kv, dim=0)
+                v_seq = v_seq.repeat_interleave(heads_per_kv, dim=0)
 
             q_pos = torch.arange(
                 query_length, device=q.device, dtype=torch.int64
