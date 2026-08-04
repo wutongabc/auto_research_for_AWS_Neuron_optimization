@@ -162,7 +162,7 @@ def _patch_qwen3_moe(module):
             padded_kv_length = block_tables.shape[1] * block_size
             prior_length = prior_tokens.reshape(-1)[0].to(torch.int64)
 
-            block_ids = block_tables[0].clamp_min(0).to(torch.int64)
+            block_ids = block_tables[0].clamp_min(0)
             k_blocks = k_cache[block_ids]
             v_blocks = v_cache[block_ids]
             k_seq = k_blocks.permute(1, 0, 2, 3).reshape(
