@@ -357,7 +357,7 @@ def _selective_expert_moe_tkg(
                     dst=down_sb,
                     data=down_sb,
                     op0=nl.multiply,
-                    operand0=expert_affinity_sb[:, expert_k_idx : expert_k_idx + 1],
+                    operand0=expert_affinity_sb[:, expert_k_idx],
                 )
             if expert_k_idx == 0:
                 nisa.tensor_copy(dst=output_temp[0 : dims.H0, 0 : dims.H1_shard, local_token_idx], src=down_sb)
@@ -462,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
