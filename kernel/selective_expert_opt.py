@@ -346,7 +346,7 @@ def _selective_expert_moe_tkg(
             if params.expert_params.expert_affinities_scaling_mode == ExpertAffinityScaleMode.POST_SCALE:
                 affinity_scale = safe_tensor_view(expert_affinity_sb).select(
                     dim=1, index=expert_k_idx
-                )
+                ).expand_dim(dim=1)
             process_down_projection(
                 hidden=gate_up_output_tv.slice(dim=2, start=expert_k_idx, end=expert_k_idx + 1),
                 output=down_sb_view,
