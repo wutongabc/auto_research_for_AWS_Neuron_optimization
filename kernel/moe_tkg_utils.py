@@ -75,6 +75,7 @@ def gather_expert_affinities(
             dtype=nl.uint16,
             buffer=nl.sbuf,
         )
+        nisa.memset(dst=index_values, value=0)
         nisa.nc_transpose(
             dst=index_values[
                 0:PARTITIONS_PER_GPSIMD_CORE,
@@ -391,4 +392,3 @@ def broadcast_all_expert_affinity(
             shuffle_mask=[0] * 32,
         )
     return expert_affinities_broadcast
-
