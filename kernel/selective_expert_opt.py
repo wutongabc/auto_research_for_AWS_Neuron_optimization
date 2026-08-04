@@ -216,7 +216,8 @@ def _selective_expert_moe_tkg(
     params.use_tkg_gate_up_proj_column_tiling = False
     params.use_tkg_down_proj_column_tiling = False
 
-    initial_gate_up_weights_tv = safe_tensor_view(gate_up_weights)
+    initial_gate_proj_weights_tv = safe_tensor_view(params.gate_proj_weights_tensor)
+    initial_up_proj_weights_tv = safe_tensor_view(params.up_proj_weights_tensor)
     initial_down_proj_weights_tv = safe_tensor_view(params.down_proj_weights_tensor)
 
     initial_mlp_bias_params = params.bias_params
@@ -256,11 +257,13 @@ def _selective_expert_moe_tkg(
                 pattern=[[dims.K, 1], [1, 1]], offset=global_token_idx * dims.K + expert_k_idx
             )
 
-            expert_gate_up_weights_tv = initial_gate_up_weights_tv._dynamic_select(
+            params.gate_proj_weights_tensor = initial_gate_proj_weights_tv._dynamic_select(
                 dim=0, index=expert_id_scalar_offset
-            )
-            params.gate_proj_weights_tensor = expert_gate_up_weights_tv.slice(dim=1, start=0, end=I)
-            params.up_proj_weights_tensor = expert_gate_up_weights_tv.slice(dim=1, start=I, end=2 * I)
+            ).select(dim=1, index=GateUpDim.GATE.value)
+
+            params.up_proj_weights_tensor = initial_up_proj_weights_tv._dynamic_select(
+                dim=0, index=expert_id_scalar_offset
+            ).select(dim=1, index=GateUpDim.UP.value)
 
             params.down_proj_weights_tensor = initial_down_proj_weights_tv._dynamic_select(dim=0, index=expert_id_scalar_offset)
 
@@ -459,4 +462,5 @@ def _select_quant_scales(quant_params: MLPQuantizationParameters, expert_id_offs
         down_in_scale=down_in_scale_view,
         clipping_bound=quant_params.clipping_bound,
     )
+
 
