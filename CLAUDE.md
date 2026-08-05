@@ -14,35 +14,39 @@ The full agent specification is in `program.md` — read it before starting any 
 # Start the container (daemon mode)
 bash docker/run.bash -d
 
-# Launch model and run benchmark (fast mode: TP=4, 16K context)
-docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_fast.bash > /dev/null 2>&1 & sleep 30 && python benchmark/prefill_bench.py --config benchmark/config_fast.json > run.log 2>&1"
+# Launch model and run benchmark (medium mode: TP=4, 32K context, 10 turns × 3000 tokens)
+# This is the DEFAULT loop benchmark — shows long-context attention behavior with fast compile
+docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_medium.bash > logs/server.log 2>&1 & sleep 30 && python benchmark/prefill_bench.py --config benchmark/config_medium.json > logs/run.log 2>&1"
 
 # Extract results
-grep "^avg_prefill_tok_per_s:\|^correctness_pct:\|^compile_time_s:" run.log
+grep "^avg_prefill_tok_per_s:\|^correctness_pct:\|^compile_time_s:" logs/run.log
+
+# Fast mode (TP=4, 16K context, quick iteration for param-only changes)
+docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_fast.bash > logs/server.log 2>&1 & sleep 30 && python benchmark/prefill_bench.py --config benchmark/config_fast.json > logs/run.log 2>&1"
 
 # Full model validation (TP=8, 128K context) — end of optimization only
-docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_full.bash > /dev/null 2>&1 & sleep 120 && python benchmark/prefill_bench.py --config benchmark/config_full.json > run_full.log 2>&1"
+docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_full.bash > logs/server_full.log 2>&1 & sleep 120 && python benchmark/prefill_bench.py --config benchmark/config_full.json > logs/run_full.log 2>&1"
 ```
 
 ## Architecture
 
 **Model**: Qwen3MoE — 30B total params, 3B active/token, 128 experts, top-8 routing, 48 layers.
 
-**Hardware**: trn2 with 8 NeuronCores. Fast model uses cores 0-3 (TP=4), full model uses all 8 (TP=8).
+**Hardware**: trn2 with 8 NeuronCores. Fast/medium models use cores 0-3 (TP=4), full model uses all 8 (TP=8).
 
-**Container**: `browsecomp-neuron:0.21.0` — runs privileged with host networking. The vLLM fork at `/dev3/zigeng/bc/vllm-neuron/` is mounted read-only at `/opt/vllm-neuron`. Kernel and vLLM patches from this repo are bind-mounted to override container packages.
+**Container**: `browsecomp-neuron:0.21.0` — runs privileged with host networking. Full directory forks are mounted read-write into the container.
 
 **Key paths inside container**:
-- nkilib kernels: `/opt/conda/lib/python3.13/site-packages/nkilib/core/moe/moe_tkg/`
-- vLLM-neuron: `/opt/vllm-neuron/vllm_neuron/`
+- nkilib (full fork): `/opt/conda/lib/python3.13/site-packages/nkilib/` ← from `nkilib-fork/`
+- vLLM-neuron (full fork): `/opt/vllm-neuron/` ← from `/dev3/zigeng/bc/vllm-neuron/`
 
 ## Editable Files (by phase)
 
 | Phase | Budget | Editable |
 |-------|--------|----------|
-| 1: Params | 2h | `run/config.env`, `run/serve_fast.bash` |
-| 2: Model | 4h | `vLLM-neuron/__init__.py` (monkey-patches Qwen3 MoE model code) |
-| 3: Kernel | 6h | `kernel/moe_tkg.py`, `kernel/selective_expert_opt.py` (NKI kernels) |
+| 1: Params | 2h | `run/config.env`, `run/serve_fast.bash`, `run/serve_medium.bash` |
+| 2: Model | 4h | Any file in `/dev3/zigeng/bc/vllm-neuron/` (full fork) |
+| 3: Kernel | 6h | Any file in `nkilib-fork/` (full fork) |
 
 ## Read-Only (never modify)
 

@@ -12,8 +12,10 @@ To set up a new optimization run, work with the user to:
    - `program.md` — this file. The rules of the game.
    - `benchmark/prefill_bench.py` — the judge program. **Do not modify.**
    - `benchmark/config_fast.json` — fast model config. **Do not modify.**
+   - `benchmark/config_medium.json` — medium model config (loop default). **Do not modify.**
    - `benchmark/config_full.json` — full model config. **Do not modify.**
    - `run/serve_fast.bash` — launch script for fast model. You CAN modify.
+   - `run/serve_medium.bash` — launch script for medium model. You CAN modify.
    - `run/config.env` — environment variables. You CAN modify.
    - `docker/run.bash` — docker launch script. **Do not modify.**
 4. **Verify environment**: Check that the docker container `neuron-prefill` can start:
@@ -31,8 +33,9 @@ To set up a new optimization run, work with the user to:
 - 128 experts, top-8 routing, 48 layers
 - Hidden: 2048, MoE intermediate: 768, GQA (32 heads, 4 KV heads)
 
-**Two configurations**:
-- **Fast model** (loop): TP=4, max_model_len=16384, 1200 tokens/turn, ~13 turns
+**Three configurations**:
+- **Fast model** (quick iteration): TP=4, max_model_len=16384, 1200 tokens/turn, ~13 turns
+- **Medium model** (loop): TP=4, max_model_len=32768, 3000 tokens/turn, 10 turns — shows long-context attention behavior with same compile time as fast
 - **Full model** (end validation): TP=8, max_model_len=131072, 3000 tokens/turn, ~42 turns
 
 **Hardware**: trn2, NeuronCores 0-7 (8 cores total). Fast model uses 4 cores, full model uses all 8.
@@ -50,7 +53,8 @@ The single summary number for keep/discard decisions is the **average prefill_to
 ## What you CAN modify
 
 ### Phase 1 — Launch Parameters (budget: 2 hours)
-- `run/serve_fast.bash` — serving script with launch arguments
+- `run/serve_fast.bash` — serving script for fast model (quick iteration)
+- `run/serve_medium.bash` — serving script for medium model (loop default)
 - `run/config.env` — environment variables (bucket sizes, batch sizes, scheduling flags)
 
 ### Phase 2 — vLLM Model Code (budget: 4 hours)
@@ -155,7 +159,7 @@ LOOP until time budget exhausted:
 3. `git commit` the change
 4. Compile (if needed) and run the benchmark:
    ```bash
-   docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_fast.bash > logs/server.log 2>&1 & sleep 30 && python benchmark/prefill_bench.py --config benchmark/config_fast.json > logs/run.log 2>&1"
+   docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_medium.bash > logs/server.log 2>&1 & sleep 30 && python benchmark/prefill_bench.py --config benchmark/config_medium.json > logs/run.log 2>&1"
    ```
    (Adjust startup wait as needed based on model load time)
 5. Read results: `grep "^avg_prefill_tok_per_s:\|^correctness_pct:\|^compile_time_s:" logs/run.log`
