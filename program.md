@@ -54,12 +54,21 @@ The single summary number for keep/discard decisions is the **average prefill_to
 - `run/config.env` — environment variables (bucket sizes, batch sizes, scheduling flags)
 
 ### Phase 2 — vLLM Model Code (budget: 4 hours)
-- `vLLM-neuron/` — patch files that overlay into the container's vLLM-neuron installation
+- Full vLLM-neuron fork at `/dev3/zigeng/bc/vllm-neuron/` (mounted read-write into container at `/opt/vllm-neuron`)
+- You can modify ANY file in this fork: model code, worker, attention backend, functional layers, fx passes, etc.
 - Targets: attention implementation, MoE routing, chunked prefill, scheduling, graph compilation hints
+- Be more creative to change whatever you want in this vLLM-neuron code. Above targets are just suggestions. You are not forced to follow these targets. You can change whatever you want in this vLLM-neuron code.
 
 ### Phase 3 — NKI Kernels (budget: 6 hours)
-- `kernel/` — NKI kernel patches or new kernel implementations
+- Full nkilib fork at `nkilib-fork/` (mounted read-write into container at `/opt/conda/lib/python3.13/site-packages/nkilib/`)
+- You can modify ANY file in this fork: attention kernels, MoE kernels, utils, quantization, etc.
+- Key directories:
+  - `nkilib-fork/core/attention/` — segmented attention, KV-parallel attention, fused attention
+  - `nkilib-fork/core/moe/moe_tkg/` — MoE expert dispatch (previously optimized)
+  - `nkilib-fork/core/utils/` — shared utilities
+  - `nkilib-fork/core/quantization/` — quantization kernels
 - Targets: MoE expert dispatch, attention kernels, custom fused operations
+- Be more creative to change whatever you want in this Neuron Kernel code. Above targets are just suggestions. You are not forced to follow these targets. You can change whatever you want in this kernel code.
 
 ## What you CANNOT modify
 
@@ -71,7 +80,11 @@ The single summary number for keep/discard decisions is the **average prefill_to
 
 **Maximize average prefill tok/s** while maintaining correctness (>99% top-1 logit match against baseline).
 
-Simplicity criterion (same as autoresearch): all else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Removing something and getting equal or better results is a win.
+**Don't be afraid to go big.** The Neuron software stack is immature — there are likely significant performance wins hiding behind default configurations, unoptimized code paths, and unnecessary abstractions. Both small parameter tweaks and large structural changes are welcome:
+- Simple parameter changes (bucket sizes, batch configs, compilation flags) are fine and encouraged
+- But also feel free to rip out entire code paths, rewrite subsystems, or restructure the MoE dispatch if you think it will help
+- Question framework defaults — many were designed for GPUs, not Neuron
+- If you can DELETE code and get the same performance, that's the best kind of win
 
 ## Output Format
 
@@ -80,13 +93,17 @@ The benchmark prints a summary after each run:
 ```
 ---
 avg_prefill_tok_per_s:  12345.6
+avg_tok_per_s_all:      13000.2
 mfu_percent:            42.3
 correctness_pct:        99.8
 total_turns:            13
+scoring_turns:          6
 compile_time_s:         312.4
 peak_hbm_mb:            24576.0
 ---
 ```
+
+NOTE: `avg_prefill_tok_per_s` uses only the **last 50% of turns** (long-context, steady-state). This is the scoring metric. `avg_tok_per_s_all` includes all turns for reference.
 
 Extract the key metric: `grep "^avg_prefill_tok_per_s:" run.log`
 
@@ -138,11 +155,11 @@ LOOP until time budget exhausted:
 3. `git commit` the change
 4. Compile (if needed) and run the benchmark:
    ```bash
-   docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_fast.bash > /dev/null 2>&1 & sleep 30 && python benchmark/prefill_bench.py --config benchmark/config_fast.json > run.log 2>&1"
+   docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_fast.bash > logs/server.log 2>&1 & sleep 30 && python benchmark/prefill_bench.py --config benchmark/config_fast.json > logs/run.log 2>&1"
    ```
    (Adjust startup wait as needed based on model load time)
-5. Read results: `grep "^avg_prefill_tok_per_s:\|^correctness_pct:\|^compile_time_s:" run.log`
-6. If grep output is empty, the run crashed. Run `tail -n 50 run.log` for the traceback.
+5. Read results: `grep "^avg_prefill_tok_per_s:\|^correctness_pct:\|^compile_time_s:" logs/run.log`
+6. If grep output is empty, the run crashed. Run `tail -n 50 logs/run.log` for the traceback.
 7. Record results in results.tsv
 8. **Keep/Discard logic**:
    - If tok_per_s improved AND correctness >= 99.0%: KEEP (branch advances)
@@ -156,7 +173,7 @@ LOOP until time budget exhausted:
 After Phase 3 completes:
 1. Run the full model benchmark (TP=8, 128K context, 3000 tokens/turn):
    ```bash
-   docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_full.bash > /dev/null 2>&1 & sleep 120 && python benchmark/prefill_bench.py --config benchmark/config_full.json > run_full.log 2>&1"
+   docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_full.bash > logs/server_full.log 2>&1 & sleep 120 && python benchmark/prefill_bench.py --config benchmark/config_full.json > logs/run_full.log 2>&1"
    ```
 2. Log the final validation results in results.tsv with description "FINAL VALIDATION (full model)"
 3. Print a summary comparing baseline vs final performance
@@ -168,4 +185,6 @@ After Phase 3 completes:
 - **Compilation awareness**: Phase 1 changes should NOT require recompilation (param-only changes). If a Phase 1 change triggers recompilation, that's acceptable but try to minimize it.
 - **Crashes**: If something is easy to fix (typo, import error), fix and re-run. If fundamentally broken, log crash, revert, move on.
 - **Timeout**: If a single experiment takes >30 minutes total (compile + run), kill it and treat as crash.
-- **Think harder**: If you run out of ideas within a phase, re-read the model architecture, look at the existing patches in BrowseComp-Plus for inspiration, think about what other projects do for prefill optimization on Neuron.
+- **Mix small and large**: Alternate between quick parameter tweaks and bigger structural changes. Small wins compound, but don't get stuck only tuning knobs — when params are exhausted, be willing to refactor aggressively.
+- **Learn from CUDA**: Reference mature CUDA optimization techniques and published literature — FlashAttention, FlashDecoding, PagedAttention, MegaBlocks MoE, Triton kernel patterns, DeepSpeed-MoE, etc. Many of these ideas can be adapted to Neuron's architecture (e.g., tiling strategies, operator fusion, memory access patterns). If a technique is well-proven on GPU, consider how the same principle applies to NeuronCores' SBUF/PSUM/DMA model.
+- **Think harder**: If you run out of ideas within a phase, re-read the model architecture, look at the existing patches in BrowseComp-Plus for inspiration, read the vLLM-neuron source code to find bottlenecks, think about what's fundamentally different about Neuron vs GPU that the code isn't accounting for.

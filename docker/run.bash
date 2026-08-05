@@ -30,19 +30,12 @@ CONTAINER_NAME="${CONTAINER_NAME:-neuron-prefill}"
 # NeuronCores 0-7
 NEURON_VISIBLE_DEVICES_RANGE="0,1,2,3,4,5,6,7"
 
-# nkilib patch directories (from this repo — AI-editable)
-KERNEL_PATCHES_DIR="$REPO_ROOT/kernel"
-# vLLM-neuron patches (from this repo — AI-editable)
-VLLM_PATCHES_DIR="$REPO_ROOT/vLLM-neuron"
-
-# Base nkilib patches from BrowseComp-Plus (current production)
-BASE_PATCHES_DIR="$BROWSECOMP_ROOT/patches/nkilib_tkg_swdge"
-BASE_UTILS_PATCHES_DIR="$BROWSECOMP_ROOT/patches/nkilib_utils"
+# nkilib fork (full package, AI-editable)
+NKILIB_FORK="${NKILIB_FORK:-$REPO_ROOT/nkilib-fork}"
 
 # Container paths
-CONTAINER_NKILIB="/opt/conda/lib/python3.13/site-packages/nkilib/core/moe/moe_tkg"
-CONTAINER_NKILIB_UTILS="/opt/conda/lib/python3.13/site-packages/nkilib/core/utils"
-CONTAINER_VLLM="/opt/vllm-neuron/vllm_neuron"
+CONTAINER_NKILIB="/opt/conda/lib/python3.13/site-packages/nkilib"
+CONTAINER_VLLM="/opt/vllm-neuron"
 
 # Parse mode
 MODE="interactive"
@@ -110,7 +103,8 @@ DOCKER_ARGS=(
     -v "$REPO_ROOT:/dev3/zigeng/bc/opt"
     -v "$HF_CACHE_DIR:/root/.cache/huggingface"
     -v "$NKI_CACHE_DIR:/var/tmp/nki-intermediate-cache"
-    -v "$VLLM_FORK:/opt/vllm-neuron:ro"
+    -v "$VLLM_FORK:/opt/vllm-neuron"
+    -v "$NKILIB_FORK:$CONTAINER_NKILIB"
     -v "$LOCAL_MODELS_DIR:/dev3/zigeng/bc/opt/local-models"
     -w /dev3/zigeng/bc/opt
     -e "HF_HOME=/root/.cache/huggingface"
@@ -123,48 +117,13 @@ DOCKER_ARGS=(
     -e "NEURON_SKIP_EFA_AFFINITY=1"
 )
 
-# Mount base nkilib patches (production baseline from BrowseComp-Plus)
-if [[ -d "$BASE_PATCHES_DIR" ]]; then
-    for patch_file in "$BASE_PATCHES_DIR"/*.py; do
-        if [[ -f "$patch_file" ]]; then
-            fname="$(basename "$patch_file")"
-            DOCKER_ARGS+=(-v "$patch_file:$CONTAINER_NKILIB/$fname:ro")
-        fi
-    done
-    echo "  Mounted $(ls "$BASE_PATCHES_DIR"/*.py 2>/dev/null | wc -l) base nkilib TKG patches"
+# Verify forks exist
+if [[ ! -d "$NKILIB_FORK/core" ]]; then
+    echo "ERROR: nkilib fork not found at: $NKILIB_FORK" >&2
+    exit 1
 fi
-
-if [[ -d "$BASE_UTILS_PATCHES_DIR" ]]; then
-    for patch_file in "$BASE_UTILS_PATCHES_DIR"/*.py; do
-        if [[ -f "$patch_file" ]]; then
-            fname="$(basename "$patch_file")"
-            DOCKER_ARGS+=(-v "$patch_file:$CONTAINER_NKILIB_UTILS/$fname:ro")
-        fi
-    done
-    echo "  Mounted $(ls "$BASE_UTILS_PATCHES_DIR"/*.py 2>/dev/null | wc -l) base nkilib utils patches"
-fi
-
-# Mount kernel patches from this repo (AI-editable, override base patches)
-if [[ -d "$KERNEL_PATCHES_DIR" ]] && ls "$KERNEL_PATCHES_DIR"/*.py &>/dev/null 2>&1; then
-    for patch_file in "$KERNEL_PATCHES_DIR"/*.py; do
-        if [[ -f "$patch_file" ]]; then
-            fname="$(basename "$patch_file")"
-            DOCKER_ARGS+=(-v "$patch_file:$CONTAINER_NKILIB/$fname")
-        fi
-    done
-    echo "  Mounted $(ls "$KERNEL_PATCHES_DIR"/*.py 2>/dev/null | wc -l) opt kernel patches (overrides)"
-fi
-
-# Mount vLLM-neuron patches from this repo (AI-editable)
-if [[ -d "$VLLM_PATCHES_DIR" ]] && ls "$VLLM_PATCHES_DIR"/*.py &>/dev/null 2>&1; then
-    for patch_file in "$VLLM_PATCHES_DIR"/*.py; do
-        if [[ -f "$patch_file" ]]; then
-            fname="$(basename "$patch_file")"
-            DOCKER_ARGS+=(-v "$patch_file:$CONTAINER_VLLM/$fname")
-        fi
-    done
-    echo "  Mounted $(ls "$VLLM_PATCHES_DIR"/*.py 2>/dev/null | wc -l) vLLM-neuron patches (overrides)"
-fi
+echo "  nkilib fork: $NKILIB_FORK ($(find "$NKILIB_FORK" -name '*.py' | wc -l) files)"
+echo "  vLLM-neuron fork: $VLLM_FORK ($(find "$VLLM_FORK" -name '*.py' | wc -l) files)"
 
 [[ -n "${HF_TOKEN:-}" ]] && DOCKER_ARGS+=(-e "HF_TOKEN=$HF_TOKEN")
 

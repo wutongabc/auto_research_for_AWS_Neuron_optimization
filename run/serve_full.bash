@@ -54,6 +54,8 @@ echo "  KV dtype: $KV_CACHE_DTYPE"
 echo "  FP8 experts: $VLLM_NEURON_FP8_EXPERT_WEIGHTS"
 echo ""
 
+mkdir -p "$REPO_ROOT/.compile-artifacts"
+cd "$REPO_ROOT/.compile-artifacts"
 python -m vllm.entrypoints.openai.api_server "${SERVE_ARGS[@]}" &
 VLLM_PID=$!
 

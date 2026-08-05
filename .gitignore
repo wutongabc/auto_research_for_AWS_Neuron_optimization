@@ -3,6 +3,18 @@ local-models/
 *.neff
 *.ntff
 
+# NKI/neuronx-cc compile metrics (hex-named dirs dumped in cwd)
+[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*/
+global_metric_store.json
+
+# Compile caches and artifacts
+.full-cache/
+.phase3-cache/
+.compile-artifacts/
+
+# Generated images
+*.png
+
 # Benchmark outputs (generated)
 benchmark/baseline_logits_*.json
 benchmark/results_*_latest.json
@@ -11,6 +23,7 @@ benchmark/results_*_latest.json
 run.log
 run_full.log
 *.log
+logs/
 
 # Results tracking (untracked, like autoresearch)
 results.tsv

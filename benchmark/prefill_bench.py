@@ -298,9 +298,16 @@ def run_benchmark(config: dict) -> dict:
     if not valid_results:
         return {"error": "all_turns_failed"}
 
-    avg_tok_per_s = np.mean([r["tok_per_s"] for r in valid_results])
-    total_tokens = sum(r["new_tokens"] for r in valid_results)
-    total_time = sum(r["prefill_time_ms"] for r in valid_results) / 1000.0
+    # Use only the last 50% of turns for the summary metric (excludes warmup/short-context turns)
+    cutoff = len(valid_results) // 2
+    scoring_results = valid_results[cutoff:]
+
+    avg_tok_per_s = np.mean([r["tok_per_s"] for r in scoring_results])
+    total_tokens = sum(r["new_tokens"] for r in scoring_results)
+    total_time = sum(r["prefill_time_ms"] for r in scoring_results) / 1000.0
+
+    # Also compute full-run average for reference
+    avg_tok_per_s_all = np.mean([r["tok_per_s"] for r in valid_results])
 
     mfu = compute_mfu(total_tokens, total_time, num_cores)
 
@@ -345,11 +352,14 @@ def run_benchmark(config: dict) -> dict:
         pass
 
     # Print summary
+    print(f"\n(Scoring on last {len(scoring_results)}/{len(valid_results)} turns, excluding warmup)")
     print("\n---")
     print(f"avg_prefill_tok_per_s:  {avg_tok_per_s:.1f}")
+    print(f"avg_tok_per_s_all:      {avg_tok_per_s_all:.1f}")
     print(f"mfu_percent:            {mfu:.1f}")
     print(f"correctness_pct:        {correctness_pct:.1f}")
     print(f"total_turns:            {len(valid_results)}")
+    print(f"scoring_turns:          {len(scoring_results)}")
     print(f"compile_time_s:         {compile_time_s:.1f}")
     print(f"peak_hbm_mb:            {peak_hbm_mb:.1f}")
     print("---")
@@ -358,9 +368,11 @@ def run_benchmark(config: dict) -> dict:
     results = {
         "summary": {
             "avg_prefill_tok_per_s": round(avg_tok_per_s, 1),
+            "avg_tok_per_s_all": round(avg_tok_per_s_all, 1),
             "mfu_percent": round(mfu, 1),
             "correctness_pct": round(correctness_pct, 1),
             "total_turns": len(valid_results),
+            "scoring_turns": len(scoring_results),
             "compile_time_s": compile_time_s,
             "peak_hbm_mb": peak_hbm_mb,
         },
