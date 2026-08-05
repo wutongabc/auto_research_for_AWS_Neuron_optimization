@@ -60,19 +60,29 @@ The single summary number for keep/discard decisions is the **average prefill_to
 ### Phase 2 — vLLM Model Code (budget: 4 hours)
 - Full vLLM-neuron fork at `/dev3/zigeng/bc/vllm-neuron/` (mounted read-write into container at `/opt/vllm-neuron`)
 - You can modify ANY file in this fork: model code, worker, attention backend, functional layers, fx passes, etc.
-- Targets: attention implementation, MoE routing, chunked prefill, scheduling, graph compilation hints
-- Be more creative to change whatever you want in this vLLM-neuron code. Above targets are just suggestions. You are not forced to follow these targets. You can change whatever you want in this vLLM-neuron code.
+- Priority targets (long-context bottlenecks):
+  - Attention backend: how prefill attention is dispatched, how KV cache is accessed during long-context segments
+  - Chunked prefill scheduling: segment sizes, how context is split, padding waste reduction
+  - KV cache management: memory layout, access patterns, dtype selection per layer
+  - Graph compilation: reducing redundant ops in attention, fusing pre/post-attention work
+- Secondary targets: MoE routing, expert dispatch, scheduling policy
+- Be creative — change whatever you think will help. Above targets are prioritized suggestions, not constraints.
 
 ### Phase 3 — NKI Kernels (budget: 6 hours)
 - Full nkilib fork at `nkilib-fork/` (mounted read-write into container at `/opt/conda/lib/python3.13/site-packages/nkilib/`)
 - You can modify ANY file in this fork: attention kernels, MoE kernels, utils, quantization, etc.
 - Key directories:
-  - `nkilib-fork/core/attention/` — segmented attention, KV-parallel attention, fused attention
-  - `nkilib-fork/core/moe/moe_tkg/` — MoE expert dispatch (previously optimized)
+  - `nkilib-fork/core/attention/` — **PRIMARY TARGET**: segmented attention, KV-parallel attention, fused attention. These kernels are the inner loop at long context.
+  - `nkilib-fork/core/moe/moe_tkg/` — MoE expert dispatch (previously optimized, secondary priority)
   - `nkilib-fork/core/utils/` — shared utilities
-  - `nkilib-fork/core/quantization/` — quantization kernels
-- Targets: MoE expert dispatch, attention kernels, custom fused operations
-- Be more creative to change whatever you want in this Neuron Kernel code. Above targets are just suggestions. You are not forced to follow these targets. You can change whatever you want in this kernel code.
+  - `nkilib-fork/core/quantization/` — quantization kernels (FP8 KV cache ops)
+- Priority targets (long-context bottlenecks):
+  - Attention kernel tiling: optimize DMA/compute overlap for long KV scans, maximize SBUF reuse
+  - KV cache read patterns: streaming vs. blocked access, prefetch strategies
+  - Softmax-value fusion: reduce intermediate materialization in attention
+  - Attention parallelism: KV-parallel splits, segment-level parallelism across cores
+- Secondary targets: MoE dispatch, quantization kernels
+- Be creative — rewrite attention kernels from scratch if the existing structure is fundamentally wrong for Neuron's DMA model.
 
 ## What you CANNOT modify
 
@@ -84,11 +94,20 @@ The single summary number for keep/discard decisions is the **average prefill_to
 
 **Maximize average prefill tok/s** while maintaining correctness (>99% top-1 logit match against baseline).
 
+**Focus on long-context prefill bottlenecks.** The scoring metric uses only the last 50% of turns — these are the long-context turns where attention dominates. Key bottlenecks to attack:
+
+1. **Segmented attention over long KV cache**: Each prefill segment scans the entire accumulated KV cache. At 30K+ context, this O(new_tokens × kv_cache_length) cost dominates over MoE. Opportunities: reduce unnecessary KV reads, optimize memory access patterns, tile for SBUF locality, fuse softmax with value projection.
+2. **KV cache memory bandwidth**: Long contexts mean large KV tensors. Quantized KV (FP8), block-sparse attention, or streaming KV access patterns can reduce HBM pressure.
+3. **Attention kernel efficiency**: The NKI attention kernels in `nkilib-fork/core/attention/` (segmented, KV-parallel, fused variants) are the inner loop at long context. Rewriting or restructuring these for better DMA/compute overlap is high-value.
+4. **Prefill segmentation strategy**: How tokens are chunked into segments affects both padding waste and attention scan cost. Larger segments reduce overhead but increase per-segment attention cost.
+5. **MoE dispatch**: Still relevant but secondary at long context — MoE cost is fixed per token regardless of context length.
+
 **Don't be afraid to go big.** The Neuron software stack is immature — there are likely significant performance wins hiding behind default configurations, unoptimized code paths, and unnecessary abstractions. Both small parameter tweaks and large structural changes are welcome:
 - Simple parameter changes (bucket sizes, batch configs, compilation flags) are fine and encouraged
-- But also feel free to rip out entire code paths, rewrite subsystems, or restructure the MoE dispatch if you think it will help
+- But also feel free to rip out entire code paths, rewrite subsystems, or restructure attention kernels if you think it will help
 - Question framework defaults — many were designed for GPUs, not Neuron
 - If you can DELETE code and get the same performance, that's the best kind of win
+- Look at how attention scales with context length in the per-turn curve — that's where the biggest wins hide
 
 ## Output Format
 
@@ -190,5 +209,5 @@ After Phase 3 completes:
 - **Crashes**: If something is easy to fix (typo, import error), fix and re-run. If fundamentally broken, log crash, revert, move on.
 - **Timeout**: If a single experiment takes >30 minutes total (compile + run), kill it and treat as crash.
 - **Mix small and large**: Alternate between quick parameter tweaks and bigger structural changes. Small wins compound, but don't get stuck only tuning knobs — when params are exhausted, be willing to refactor aggressively.
-- **Learn from CUDA**: Reference mature CUDA optimization techniques and published literature — FlashAttention, FlashDecoding, PagedAttention, MegaBlocks MoE, Triton kernel patterns, DeepSpeed-MoE, etc. Many of these ideas can be adapted to Neuron's architecture (e.g., tiling strategies, operator fusion, memory access patterns). If a technique is well-proven on GPU, consider how the same principle applies to NeuronCores' SBUF/PSUM/DMA model.
+- **Learn from CUDA**: Reference mature CUDA optimization techniques and published literature — FlashAttention (tiled attention with online softmax), FlashDecoding (KV-parallel split for long context), PagedAttention (block-sparse KV), Ring Attention (sequence-parallel), MegaBlocks MoE, Triton kernel patterns, etc. Many of these ideas can be adapted to Neuron's architecture (e.g., tiling strategies, operator fusion, memory access patterns). If a technique is well-proven on GPU, consider how the same principle applies to NeuronCores' SBUF/PSUM/DMA model. Especially relevant: FlashAttention's tiling to avoid materializing the full N×N attention matrix, and FlashDecoding's approach to parallelizing long KV scans.
 - **Think harder**: If you run out of ideas within a phase, re-read the model architecture, look at the existing patches in BrowseComp-Plus for inspiration, read the vLLM-neuron source code to find bottlenecks, think about what's fundamentally different about Neuron vs GPU that the code isn't accounting for.
