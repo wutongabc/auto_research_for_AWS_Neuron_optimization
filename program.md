@@ -15,7 +15,8 @@ To set up a new optimization run, work with the user to:
    - `benchmark/config_medium.json` — medium model config (loop default). **Do not modify.**
    - `benchmark/config_full.json` — full model config. **Do not modify.**
    - `run/serve_fast.bash` — launch script for fast model. You CAN modify.
-   - `run/serve_medium.bash` — launch script for medium model. You CAN modify.
+   - `run/serve_medium.bash` — launch script for medium model (loop default). You CAN modify.
+   - `run/serve_full.bash` — launch script for full model validation. You CAN modify.
    - `run/config.env` — environment variables. You CAN modify.
    - `docker/run.bash` — docker launch script. **Do not modify.**
 4. **Verify environment**: Check that the docker container `neuron-prefill` can start:
@@ -48,7 +49,7 @@ The benchmark reports:
 3. **correctness**: Top-5 logit comparison against baseline. Pass if >99% of positions match top-1.
 4. **Per-turn curve**: tok/s at each context length (turn).
 
-The single summary number for keep/discard decisions is the **average prefill_tok_per_s across all turns**.
+The single summary number for keep/discard decisions is the **average prefill_tok_per_s across the last 50% of turns** (long-context steady-state).
 
 ## What you CAN modify
 

@@ -22,6 +22,7 @@ export NEURON_COMPILE_NUM_WORKERS="${NEURON_COMPILE_WORKERS}"
 export VLLM_NEURON_FUSED_MOE_NKI="${VLLM_NEURON_FUSED_MOE_NKI}"
 export VLLM_NEURON_FP8_EXPERT_WEIGHTS="${VLLM_NEURON_FP8_EXPERT_WEIGHTS}"
 export VLLM_NEURON_FP8_ONLY="${VLLM_NEURON_FP8_ONLY}"
+export VLLM_NEURON_KV_GMU_BUDGET_CAP_FRACTION="${KV_BUDGET_CAP}"
 
 # Track compile time
 COMPILE_START=$(date +%s)
@@ -36,7 +37,7 @@ SERVE_ARGS=(
     --host "$HOST"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
-    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}]}}"
+    --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}}"
 )
 
 if [[ "${ENABLE_CHUNKED_PREFILL:-0}" == "1" ]]; then
