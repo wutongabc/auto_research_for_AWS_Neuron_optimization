@@ -44,9 +44,9 @@ docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_ful
 
 | Phase | Budget | Editable |
 |-------|--------|----------|
-| 1: Params | 2h | `run/config.env`, `run/serve_fast.bash`, `run/serve_medium.bash` |
-| 2: Model | 4h | Any file in `/dev3/zigeng/bc/vllm-neuron/` (full fork) |
-| 3: Kernel | 6h | Any file in `nkilib-fork/` (full fork) |
+| 1: Params | 1h | `run/config.env`, `run/serve_fast.bash`, `run/serve_medium.bash` |
+| 2: Model | 3h | Any file in `/dev3/zigeng/bc/vllm-neuron/` (full fork) |
+| 3: Kernel | 8h | Any file in `nkilib-fork/` (full fork) |
 
 ## Read-Only (never modify)
 

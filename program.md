@@ -52,12 +52,12 @@ The single summary number for keep/discard decisions is the **average prefill_to
 
 ## What you CAN modify
 
-### Phase 1 — Launch Parameters (budget: 2 hours)
+### Phase 1 — Launch Parameters (budget: 1 hour)
 - `run/serve_fast.bash` — serving script for fast model (quick iteration)
 - `run/serve_medium.bash` — serving script for medium model (loop default)
 - `run/config.env` — environment variables (bucket sizes, batch sizes, scheduling flags)
 
-### Phase 2 — vLLM Model Code (budget: 4 hours)
+### Phase 2 — vLLM Model Code (budget: 3 hours)
 - Full vLLM-neuron fork at `/dev3/zigeng/bc/vllm-neuron/` (mounted read-write into container at `/opt/vllm-neuron`)
 - You can modify ANY file in this fork: model code, worker, attention backend, functional layers, fx passes, etc.
 - Priority targets (long-context bottlenecks):
@@ -68,7 +68,7 @@ The single summary number for keep/discard decisions is the **average prefill_to
 - Secondary targets: MoE routing, expert dispatch, scheduling policy
 - Be creative — change whatever you think will help. Above targets are prioritized suggestions, not constraints.
 
-### Phase 3 — NKI Kernels (budget: 6 hours)
+### Phase 3 — NKI Kernels (budget: 8 hours)
 - Full nkilib fork at `nkilib-fork/` (mounted read-write into container at `/opt/conda/lib/python3.13/site-packages/nkilib/`)
 - You can modify ANY file in this fork: attention kernels, MoE kernels, utils, quantization, etc.
 - Key directories:
@@ -162,9 +162,9 @@ The loop operates in three phases with fixed time budgets. Use a timer to track 
 
 ### Phase Transitions
 
-- Phase 1 → Phase 2: after 2 hours elapsed
-- Phase 2 → Phase 3: after 4 hours elapsed
-- Phase 3 → End: after 6 hours elapsed
+- Phase 1 → Phase 2: after 1 hour elapsed
+- Phase 2 → Phase 3: after 3 hours elapsed
+- Phase 3 → End: after 8 hours elapsed
 - At the very end (after Phase 3): run the full model validation once
 
 Auto-advance between phases. Do NOT stop or ask the human.
@@ -203,7 +203,7 @@ After Phase 3 completes:
 
 ## Critical Rules
 
-- **NEVER STOP**: Once the loop begins, do NOT pause to ask the human. Run autonomously for the full 12 hours (2+4+6). The human may be asleep.
+- **NEVER STOP**: Once the loop begins, do NOT pause to ask the human. Run autonomously for the full 12 hours (1+3+8). The human may be asleep.
 - **Respect phase boundaries**: Do not modify kernel code in Phase 1 or 2. Do not modify launch params in a way that requires kernel changes during Phase 1.
 - **Compilation awareness**: Phase 1 changes should NOT require recompilation (param-only changes). If a Phase 1 change triggers recompilation, that's acceptable but try to minimize it.
 - **Crashes**: If something is easy to fix (typo, import error), fix and re-run. If fundamentally broken, log crash, revert, move on.
