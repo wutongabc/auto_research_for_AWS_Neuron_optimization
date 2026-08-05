@@ -44,7 +44,7 @@ from .moe_cte_utils import (
     stream_shuffle_broadcast,
 )
 
-BLOCK_PARALLEL_FACTOR = 4
+BLOCK_PARALLEL_FACTOR = 3
 GUP_LOAD_COALESCE_FACTOR = 2
 GUP_PROJ_DIM = 2
 _CHUNKED_I_TP_THRESHOLD = 1024  # I_TP sizes above this use chunked tiling to reduce SBUF pressure
