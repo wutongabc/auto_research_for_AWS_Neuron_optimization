@@ -125,3 +125,9 @@ ep_4	846.4	100.0	DISCARD	EP=4 no improvement vs baseline (846.1)
 optlevel_3	899.1	100.0	DISCARD	no improvement vs optlevel 2 (899.5)
 bpf_4	899.5	100.0	DISCARD	BLOCK_PARALLEL_FACTOR=4 no improvement vs 3
 gqa_broadcast	3	1031.5	0.4	100.0	155.0	keep	GQA broadcast matmul avoids repeat_interleave KV expansion (two runs: 1031.6, 1031.5; +14.7%)
+gqa_bf16_matmul	3	1124.5	0.4	100.0	155.0	keep	GQA broadcast + BF16 QK/PV matmuls with FP32 softmax (two runs: 1126.6, 1122.4; +25.0%)
+bf16_softmax	1555.8	100.0	keep	+38.4% over prev; removed FP32 softmax cast, all-BF16 attention path
+bf16_softmax_prescale_q	1611.8	100.0	keep	+3.6% over bf16_softmax; pre-scale Q eliminates 268M-elem multiply
+rmsnorm_bf16	1613.4	100.0	keep	marginal gain; RMSNorm keeps hidden in BF16, only variance in FP32
+rmsnorm_all_bf16	1626.0	100.0	keep	+0.8% over hybrid RMSNorm; all variance/rsqrt in BF16
+nki_flash_attn	3	4071.1	1.6	100.0	256.0	keep	NKI flash_attention with k_prior/v_prior + gather-before-write reorder (two runs: 4058.8, 4083.4; +150.4% over PyTorch fallback)
