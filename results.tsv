@@ -134,3 +134,5 @@ nki_flash_attn	3	4071.1	1.6	100.0	256.0	keep	NKI flash_attention with k_prior/v_
 full_nki_validation	full	1528.9	0.3	100.0	0.0	keep	FULL NKI VALIDATION (TP=8, 128K): 4.19x over baseline (364.5 tok/s), 42/42 turns, 100% correctness
 model_len_opt	3	4266.3	1.7	100.0	0.0	keep	MAX_MODEL_LEN=30208 + O3 (two runs: 4258.5, 4274.1; +5.3% over 32K baseline, total +162% over PyTorch fallback)
 final_full_val	full	1521.1	0.3	100.0	0.0	keep	FINAL FULL VALIDATION with O3: TP=8, 128K ctx, 42/42 turns, 100% correct (4.17x baseline)
+phase3_final	3	4269.0	1.7	100.0	0.0	keep	Phase 3 final: medium benchmark cold-run confirmation (MAX_MODEL_LEN=30208, O3, 8K flash sections, _MAX_SEQLEN=132096)
+full_val_final2	full	1533.2	0.3	100.0	211.0	keep	FULL MODEL FINAL: TP=8, 128K ctx, 42/42 turns, 100% correct, 4.21x baseline (364.5)
