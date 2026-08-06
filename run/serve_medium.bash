@@ -12,7 +12,7 @@ source "$SCRIPT_DIR/config.env"
 
 # Medium model overrides
 TP_SIZE=4
-MAX_MODEL_LEN=32768
+MAX_MODEL_LEN=30208
 export NEURON_VISIBLE_DEVICES="0,1,2,3"
 
 # Export Neuron env vars

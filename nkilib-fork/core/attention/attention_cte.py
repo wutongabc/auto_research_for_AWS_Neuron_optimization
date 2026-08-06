@@ -161,7 +161,7 @@ _FLOAT32_MIN = -3.4028235e38  # used for initialization and masking
 Kernel constraints (based on tested range, values outside range might work in practice)
 """
 _MAX_BS = 512  # max tested batch size
-_MAX_SEQLEN = 131072  # max allowed seqlen
+_MAX_SEQLEN = 132096  # max allowed seqlen (131072 prior + 1024 current chunk)
 _MAX_BS_TIMES_SEQLEN_QK = 32.0 * 36864 * 36864  # max tested bs*seqlen_q*seqlen_k
 _MAX_HEAD_DIM = 512  # max supported head dim (d)
 _MIN_GLOBAL_CP_DEGREE = 1  # minimum context parallel degree

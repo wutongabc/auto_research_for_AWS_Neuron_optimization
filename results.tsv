@@ -131,3 +131,5 @@ bf16_softmax_prescale_q	1611.8	100.0	keep	+3.6% over bf16_softmax; pre-scale Q e
 rmsnorm_bf16	1613.4	100.0	keep	marginal gain; RMSNorm keeps hidden in BF16, only variance in FP32
 rmsnorm_all_bf16	1626.0	100.0	keep	+0.8% over hybrid RMSNorm; all variance/rsqrt in BF16
 nki_flash_attn	3	4071.1	1.6	100.0	256.0	keep	NKI flash_attention with k_prior/v_prior + gather-before-write reorder (two runs: 4058.8, 4083.4; +150.4% over PyTorch fallback)
+full_nki_validation	full	1528.9	0.3	100.0	0.0	keep	FULL NKI VALIDATION (TP=8, 128K): 4.19x over baseline (364.5 tok/s), 42/42 turns, 100% correctness
+model_len_opt	3	4266.3	1.7	100.0	0.0	keep	MAX_MODEL_LEN=30208 + O3 (two runs: 4258.5, 4274.1; +5.3% over 32K baseline, total +162% over PyTorch fallback)
