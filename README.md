@@ -22,14 +22,19 @@ opt/
 | Phase | Budget | Target | Compile? |
 |-------|--------|--------|----------|
 | 1: Params | 2h | run/config.env, run/serve_fast.bash | Rarely |
-| 2: Model | 4h | vLLM-neuron/ patches | Yes |
-| 3: Kernel | 6h | kernel/ patches | Yes |
+| 2: Model | 4h | vLLM-neuron | Yes |
+| 3: Kernel | 6h | kernel | Yes |
 
 ## Quick Start
 
-```bash
-bash docker/run.bash -d           # Start container
-docker exec -it neuron-prefill bash
-bash run/serve_fast.bash &        # Launch model
-python benchmark/prefill_bench.py --config benchmark/config_fast.json
-```
+Modify the `program.md` instructions to your liking. Then open your AI-assistant like Codex, Claude Code or Opencode and let it read `program.md` and start optimizing.
+
+## Prgress and failure that have been made are written in `optimization_report_en.md` and `optimization_report_cn,md`
+
+## Insights and Experiences
+
+- In long time running experiences, AI-assistant might struggle in one corner case. For example, in the first 12 hours optimization, it focused on MoE optimization and hardly care about other part. In the second 12 hours optimizaiton, I manauly let AI-assistant focus on long context optimization and it optimized the attention part.
+
+- Auto-research is capable with modifying parameters, call for exisiting code modules and write small patch of code. It is hard for auto-research to write a whole flash-attention part of 4000 lines in a single 12 hours auto-research. In my first 12 hours run, it tried 6 hours to modify NKI, failed for about 50 experiments and got 0.6% progress.
+
+- It is important for auto-research to create a clean and toy directory and specific what it can modify and what it cannot, other than a heavy deveploment directory.

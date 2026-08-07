@@ -1,0 +1,3 @@
+2026-08-06T06:02:50Z INFO 3970 [root]: /opt/conda/bin/neuronx-cc list-operators
+2026-08-06T06:02:50Z INFO 3970 [root]: NeuronX Compiler version 2.26.6360.0+6f180f47 Python version 3.13.7 HWM version 2.26.0.6360++6f180f47 NumPy version 2.4.6
+2026-08-06T06:02:50Z INFO 3970 [root]: Subcommand returned with exitcode=2

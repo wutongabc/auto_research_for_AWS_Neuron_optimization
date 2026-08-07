@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tongyi-30B-A3B Prefill Optimization Timeline</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1"></script>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0d1117;
+    color: #c9d1d9;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 {
+    text-align: center;
+    color: #f0f6fc;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    text-align: center;
+    color: #8b949e;
+    margin-bottom: 24px;
+    font-size: 14px;
+  }
+  .chart-container {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 24px;
+  }
+  .legend-custom {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 12px;
+    font-size: 13px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+  .legend-line {
+    width: 20px;
+    height: 3px;
+    border-radius: 2px;
+  }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .stat-card {
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 16px;
+    text-align: center;
+  }
+  .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #58a6ff;
+  }
+  .stat-label {
+    font-size: 12px;
+    color: #8b949e;
+    margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Tongyi-30B-A3B Prefill Optimization Timeline</h1>
+<p class="subtitle">Qwen3MoE 30B / 3B active &mdash; AWS Trainium 2 &mdash; Medium Benchmark (TP=4)</p>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-value">7.5&times;</div>
+    <div class="stat-label">Total Speedup</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">571 &rarr; 4,269</div>
+    <div class="stat-label">tok/s (start &rarr; end)</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">~75</div>
+    <div class="stat-label">Total Experiments</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">100%</div>
+    <div class="stat-label">Correctness Maintained</div>
+  </div>
+</div>
+
+<div class="chart-container" style="margin-top: 24px;">
+  <canvas id="mainChart" height="105"></canvas>
+  <div class="legend-custom">
+    <div class="legend-item"><div class="legend-line" style="background:#3fb950;"></div> Best tok/s (keep)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f85149;"></div> Discard (no improvement)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#6e7681;"></div> Crash</div>
+    <div class="legend-item"><div class="legend-line" style="background:#30363d; border-top: 2px dashed #8b949e; height:0;"></div> Phase boundary</div>
+  </div>
+</div>
+
+<div class="chart-container">
+  <canvas id="round2Chart" height="90"></canvas>
+  <div class="legend-custom">
+    <div class="legend-item"><div class="legend-line" style="background:#a371f7;"></div> Best tok/s (keep)</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f85149;"></div> Discard</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#6e7681;"></div> Crash</div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════════
+// ROUND 1 DATA: Short-context optimization (16K ctx, fast iteration)
+// ═══════════════════════════════════════════════════════════════════════════════
+const round1 = [
+  // Phase 1: Parameter tuning
+  {label:'baseline',                         tok:570.6, status:'keep',    phase:1},
+  {label:'explicit O2',                      tok:570.6, status:'discard', phase:1},
+  {label:'chunk 2048',                       tok:1078.1,status:'keep',    phase:1},
+  {label:'decode buckets',                   tok:1073.7,status:'discard', phase:1},
+  {label:'chunk 1024',                       tok:1005.0,status:'discard', phase:1},
+  {label:'KV block 16',                      tok:1073.8,status:'discard', phase:1},
+  {label:'BF16 KV cache',                    tok:1082.9,status:'keep',    phase:1},
+  {label:'chunk 512',                        tok:1139.3,status:'keep',    phase:1},
+  {label:'block16 + 512',                    tok:1132.8,status:'discard', phase:1},
+  {label:'KV block 64',                      tok:1148.9,status:'keep',    phase:1},
+  {label:'KV block 128',                     tok:1137.0,status:'discard', phase:1},
+  {label:'greedy sampling',                  tok:1144.8,status:'discard', phase:1},
+  {label:'O2 compile',                       tok:1142.7,status:'discard', phase:1},
+  {label:'sync scheduling',                  tok:1132.5,status:'discard', phase:1},
+  {label:'decode bucket align',              tok:1148.1,status:'discard', phase:1},
+  {label:'KV floor 0.4GiB',                  tok:1148.7,status:'discard', phase:1},
+  {label:'minimal KV cache',                 tok:1147.2,status:'discard', phase:1},
+  {label:'runtime queue64',                  tok:0,     status:'crash',   phase:1},
+  {label:'runtime queue16',                  tok:1146.3,status:'discard', phase:1},
+  // Phase 2: Model code
+  {label:'disable metrics',                  tok:1148.2,status:'discard', phase:2},
+  {label:'skip token reductions',            tok:1147.7,status:'discard', phase:2},
+  {label:'MoE block128',                     tok:1173.1,status:'keep',    phase:2},
+  {label:'MoE block64',                      tok:0,     status:'crash',   phase:2},
+  {label:'2-block iteration',                tok:1172.5,status:'discard', phase:2},
+  {label:'skip-weight DMA',                  tok:1219.2,status:'keep',    phase:2},
+  {label:'skip+2block',                      tok:1213.4,status:'discard', phase:2},
+  {label:'skip+block256',                    tok:1173.1,status:'discard', phase:2},
+  {label:'MoE CTE crash',                    tok:0,     status:'crash',   phase:2},
+  {label:'EP=4',                             tok:1105.5,status:'discard', phase:2},
+  {label:'BF16 router GEMM',                 tok:1216.6,status:'discard', phase:2},
+  {label:'BF16 routing crash',               tok:0,     status:'crash',   phase:2},
+  {label:'fuse attn scale crash',            tok:0,     status:'crash',   phase:2},
+  {label:'NKI segmented attn',               tok:1149.3,status:'discard', phase:2},
+  {label:'BF16 QK/PV fallback',              tok:1199.5,status:'discard', phase:2},
+  {label:'hybrid NKI crash',                 tok:0,     status:'crash',   phase:2},
+  {label:'NKI fused router',                 tok:1223.4,status:'keep',    phase:2},
+  {label:'direct DMA scatter',               tok:1226.3,status:'keep',    phase:2},
+  {label:'column-tiled router',              tok:1225.6,status:'discard', phase:2},
+  {label:'expert-sharded router',            tok:1221.6,status:'discard', phase:2},
+  {label:'BF16 NKI router',                  tok:1226.0,status:'discard', phase:2},
+  {label:'sigmoid top-k mask',               tok:1227.3,status:'keep',    phase:2},
+  {label:'NKI full-softmax scatter',         tok:1220.9,status:'discard', phase:2},
+  {label:'BF16 affinities',                  tok:1223.1,status:'discard', phase:2},
+  {label:'multiply router mask',             tok:1226.8,status:'discard', phase:2},
+  {label:'fuse scale into Q',                tok:1247.9,status:'keep',    phase:2},
+  {label:'remove mask+NaN',                  tok:1450.6,status:'keep',    phase:2},
+  {label:'broadcast KV heads',               tok:1444.4,status:'discard', phase:2},
+  {label:'int32 causal mask',                tok:1449.6,status:'discard', phase:2},
+  {label:'remove block clamp',               tok:1441.7,status:'discard', phase:2},
+  {label:'remove attn-scale wrap',           tok:1452.4,status:'keep',    phase:2},
+  {label:'construct reject mask',            tok:1289.1,status:'discard', phase:2},
+  {label:'int32 block gather',               tok:1449.5,status:'discard', phase:2},
+  {label:'BF16 query scale',                 tok:1450.3,status:'discard', phase:2},
+  {label:'scalar indexing',                  tok:1451.4,status:'discard', phase:2},
+  {label:'rank-3 KV expand',                 tok:1446.1,status:'discard', phase:2},
+  {label:'finite mask floor',                tok:1444.3,status:'discard', phase:2},
+  // Phase 3: MoE CTE kernel
+  {label:'fuse expert scaling crash',        tok:0,     status:'crash',   phase:3},
+  {label:'force HWDGE down',                 tok:1448.6,status:'discard', phase:3},
+  {label:'force SWDGE down',                 tok:1447.2,status:'discard', phase:3},
+  {label:'custom dispatcher crash',          tok:0,     status:'crash',   phase:3},
+  {label:'static scale fusion',              tok:1446.5,status:'discard', phase:3},
+  {label:'SBUF interleave 4',               tok:1451.7,status:'discard', phase:3},
+  {label:'serialize SBUF scope',             tok:1430.1,status:'discard', phase:3},
+  {label:'fuse affinity crash',              tok:0,     status:'crash',   phase:3},
+  {label:'affinity stride crash',            tok:0,     status:'crash',   phase:3},
+  {label:'fuse all affinity',                tok:1437.9,status:'discard', phase:3},
+  {label:'transpose crash',                  tok:0,     status:'crash',   phase:3},
+  {label:'cleared gather tile',              tok:1449.8,status:'discard', phase:3},
+  {label:'broadcast affinities',             tok:1446.7,status:'discard', phase:3},
+  {label:'drain on Vector',                  tok:1446.8,status:'discard', phase:3},
+  {label:'fuse scale experts 2-8',           tok:1443.3,status:'discard', phase:3},
+  {label:'6-way SBUF interleave',            tok:1454.0,status:'keep',    phase:3},
+  {label:'7-way SBUF interleave',            tok:1447.5,status:'discard', phase:3},
+  {label:'5-way SBUF interleave',            tok:1451.9,status:'discard', phase:3},
+  {label:'expand SBUF 207K',                 tok:1451.5,status:'discard', phase:3},
+  {label:'tighten SBUF 196K',               tok:1447.4,status:'discard', phase:3},
+  {label:'cap gate/up HTile',                tok:1450.2,status:'discard', phase:3},
+  {label:'double-buffer gate/up',            tok:1447.7,status:'discard', phase:3},
+  {label:'pair exact tiles',                 tok:1448.5,status:'discard', phase:3},
+  {label:'pipeline 512-wide',               tok:1446.6,status:'discard', phase:3},
+  {label:'fuse cross-core',                  tok:1443.3,status:'discard', phase:3},
+  {label:'HWDGE quant meta',                 tok:1451.4,status:'discard', phase:3},
+  {label:'pack expert outputs',              tok:1448.4,status:'discard', phase:3},
+  {label:'reuse expert scales',              tok:1447.3,status:'discard', phase:3},
+  {label:'expand SBUF 202K',                 tok:1450.9,status:'discard', phase:3},
+  {label:'tighten SBUF 199K',               tok:1450.6,status:'discard', phase:3},
+  {label:'split expert scope',               tok:1444.9,status:'discard', phase:3},
+  {label:'fold POST_SCALE',                  tok:1452.7,status:'discard', phase:3},
+  {label:'reuse 6 down buffers',             tok:1450.5,status:'discard', phase:3},
+  {label:'broadcast 3 scales',               tok:1451.6,status:'discard', phase:3},
+  {label:'auto SBUF alloc',                  tok:1447.3,status:'discard', phase:3},
+  {label:'HWDGE down meta',                  tok:1444.4,status:'discard', phase:3},
+  {label:'HWDGE gate-up meta',               tok:1419.4,status:'discard', phase:3},
+  {label:'split down crash',                 tok:0,     status:'crash',   phase:3},
+  {label:'fix split down crash',             tok:0,     status:'crash',   phase:3},
+  {label:'double-buf 512 down',              tok:1440.8,status:'discard', phase:3},
+  {label:'batch 3 scale DMAs',               tok:1446.7,status:'discard', phase:3},
+  {label:'interleaved SBUF scales',          tok:1434.3,status:'discard', phase:3},
+  {label:'scope down in expert',             tok:1443.4,status:'discard', phase:3},
+  {label:'separate gate-up bufs',            tok:1443.4,status:'discard', phase:3},
+  {label:'reorder SBUF layout',              tok:1438.8,status:'discard', phase:3},
+  {label:'skip trailing incr',              tok:1431.6,status:'discard', phase:3},
+  {label:'rotate section phase',             tok:1442.8,status:'discard', phase:3},
+  {label:'advance before postproc',          tok:1444.2,status:'discard', phase:3},
+  {label:'batch gate-up DMA',                tok:1444.5,status:'discard', phase:3},
+  {label:'combined gate-up view',            tok:1439.7,status:'discard', phase:3},
+  {label:'combined scale view',              tok:1435.9,status:'discard', phase:3},
+  {label:'2D affinity shape',                tok:1445.3,status:'discard', phase:3},
+  {label:'3-way interleave',                 tok:1436.9,status:'discard', phase:3},
+];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ROUND 2 DATA: Long-context optimization (32K ctx, 10×3000 tokens)
+// ═══════════════════════════════════════════════════════════════════════════════
+const round2 = [
+  {label:'new baseline (32K ctx)',          tok:845,   status:'keep',    phase:'params'},
+  {label:'pad K to 16-block',              tok:846.1, status:'discard', phase:'params'},
+  {label:'block_size=256',                 tok:821.3, status:'discard', phase:'params'},
+  {label:'batched_tokens=1024',            tok:896.2, status:'keep',    phase:'params'},
+  {label:'batched_tokens=2048',            tok:697.8, status:'discard', phase:'params'},
+  {label:'1024 + block128',                tok:899.5, status:'keep',    phase:'params'},
+  {label:'EP=4',                           tok:846.4, status:'discard', phase:'params'},
+  {label:'O3 compiler',                    tok:899.1, status:'discard', phase:'params'},
+  {label:'BLOCK_PARALLEL=4',               tok:899.5, status:'discard', phase:'params'},
+  {label:'GQA broadcast matmul',           tok:1031.5,status:'keep',    phase:'model'},
+  {label:'+ BF16 QK/PV matmul',            tok:1124.5,status:'keep',    phase:'model'},
+  {label:'BF16 softmax (full BF16 path)',  tok:1555.8,status:'keep',    phase:'model'},
+  {label:'pre-scale Q',                    tok:1611.8,status:'keep',    phase:'model'},
+  {label:'RMSNorm BF16 (hybrid)',          tok:1613.4,status:'keep',    phase:'model'},
+  {label:'RMSNorm all-BF16',              tok:1626.0,status:'keep',    phase:'model'},
+  {label:'NKI flash_attention',            tok:4071.1,status:'keep',    phase:'kernel'},
+  {label:'MAX_MODEL_LEN=30208 + O3',       tok:4269.0,status:'keep',    phase:'kernel'},
+];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART 1: Round 1 Timeline
+// ═══════════════════════════════════════════════════════════════════════════════
+const ctx1 = document.getElementById('mainChart').getContext('2d');
+
+// Compute running best for round 1
+let best1 = 0;
+const runningBest1 = round1.map(d => {
+  if (d.status === 'keep' && d.tok > best1) best1 = d.tok;
+  return best1;
+});
+
+// Phase boundaries for round 1
+const phase1End = round1.findIndex(d => d.phase === 2);
+const phase2End = round1.findIndex(d => d.phase === 3);
+
+new Chart(ctx1, {
+  type: 'line',
+  data: {
+    labels: round1.map(d => d.label),
+    datasets: [
+      {
+        label: 'Best tok/s',
+        data: runningBest1,
+        borderColor: '#3fb950',
+        backgroundColor: 'rgba(63,185,80,0.1)',
+        borderWidth: 2.5,
+        fill: true,
+        tension: 0.1,
+        pointRadius: 0,
+      },
+      {
+        label: 'Experiment result',
+        data: round1.map(d => d.status === 'crash' ? null : d.tok),
+        borderColor: 'transparent',
+        pointBackgroundColor: round1.map(d => {
+          if (d.status === 'keep') return '#3fb950';
+          if (d.status === 'discard') return '#f85149';
+          return '#6e7681';
+        }),
+        pointBorderColor: round1.map(d => {
+          if (d.status === 'keep') return '#3fb950';
+          if (d.status === 'discard') return '#f85149';
+          return '#6e7681';
+        }),
+        pointRadius: round1.map(d => d.status === 'keep' ? 5 : 3),
+        pointHoverRadius: 6,
+        showLine: false,
+      },
+      {
+        label: 'Crashes',
+        data: round1.map(d => d.status === 'crash' ? 0 : null),
+        borderColor: 'transparent',
+        pointBackgroundColor: '#6e7681',
+        pointBorderColor: '#6e7681',
+        pointRadius: 4,
+        pointStyle: 'crossRot',
+        showLine: false,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      title: {
+        display: true,
+        text: 'Round 1: Short-Context Optimization (16K ctx) — 571 → 1,454 tok/s',
+        color: '#f0f6fc',
+        font: { size: 16, weight: '600' },
+        padding: { bottom: 16 }
+      },
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#21262d',
+        borderColor: '#30363d',
+        borderWidth: 1,
+        titleColor: '#f0f6fc',
+        bodyColor: '#c9d1d9',
+        callbacks: {
+          title: (items) => round1[items[0].dataIndex].label,
+          label: (item) => {
+            const d = round1[item.dataIndex];
+            if (d.status === 'crash') return 'CRASH';
+            return `${d.tok.toFixed(1)} tok/s [${d.status}]`;
+          }
+        }
+      },
+      annotation: {
+        annotations: {
+          phase1: {
+            type: 'line', xMin: phase1End - 0.5, xMax: phase1End - 0.5,
+            borderColor: '#8b949e', borderWidth: 1, borderDash: [5, 5],
+            label: { display: true, content: 'Phase 2: Model', color: '#8b949e', font: {size: 11}, position: 'start', yAdjust: -10 }
+          },
+          phase2: {
+            type: 'line', xMin: phase2End - 0.5, xMax: phase2End - 0.5,
+            borderColor: '#8b949e', borderWidth: 1, borderDash: [5, 5],
+            label: { display: true, content: 'Phase 3: MoE Kernel', color: '#8b949e', font: {size: 11}, position: 'start', yAdjust: -10 }
+          },
+          maskRemoval: {
+            type: 'label', xValue: 45, yValue: 1450,
+            content: ['remove mask/NaN', '+16.2%'],
+            color: '#3fb950', font: {size: 10},
+            backgroundColor: 'rgba(63,185,80,0.1)',
+            borderColor: '#3fb950', borderWidth: 1, borderRadius: 4,
+            padding: 4
+          },
+          flatZone: {
+            type: 'box', xMin: phase2End - 0.5, xMax: round1.length - 1,
+            yMin: 1410, yMax: 1460,
+            backgroundColor: 'rgba(248,81,73,0.05)',
+            borderColor: 'rgba(248,81,73,0.2)', borderWidth: 1,
+            label: { display: true, content: '~40 MoE experiments: all <1%', color: '#f85149', font: {size: 10}, position: 'end' }
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        display: true,
+        ticks: { display: false },
+        grid: { color: '#21262d' },
+        title: { display: true, text: 'Experiments (chronological)', color: '#8b949e' }
+      },
+      y: {
+        grid: { color: '#21262d' },
+        ticks: { color: '#8b949e', callback: v => v.toLocaleString() + ' tok/s' },
+        title: { display: true, text: 'Throughput (tok/s)', color: '#8b949e' },
+        min: 0, max: 1600
+      }
+    }
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART 2: Round 2 Timeline
+// ═══════════════════════════════════════════════════════════════════════════════
+const ctx2 = document.getElementById('round2Chart').getContext('2d');
+
+let best2 = 0;
+const runningBest2 = round2.map(d => {
+  if (d.status === 'keep' && d.tok > best2) best2 = d.tok;
+  return best2;
+});
+
+const paramsEnd2 = round2.findIndex(d => d.phase === 'model');
+const kernelStart2 = round2.findIndex(d => d.phase === 'kernel');
+
+new Chart(ctx2, {
+  type: 'line',
+  data: {
+    labels: round2.map(d => d.label),
+    datasets: [
+      {
+        label: 'Best tok/s',
+        data: runningBest2,
+        borderColor: '#a371f7',
+        backgroundColor: 'rgba(163,113,247,0.08)',
+        borderWidth: 2.5,
+        fill: true,
+        tension: 0.2,
+        pointRadius: 0,
+      },
+      {
+        label: 'Experiment result',
+        data: round2.map(d => d.status === 'crash' ? null : d.tok),
+        borderColor: 'transparent',
+        pointBackgroundColor: round2.map(d => {
+          if (d.status === 'keep') return '#a371f7';
+          if (d.status === 'discard') return '#f85149';
+          return '#6e7681';
+        }),
+        pointBorderColor: round2.map(d => {
+          if (d.status === 'keep') return '#a371f7';
+          if (d.status === 'discard') return '#f85149';
+          return '#6e7681';
+        }),
+        pointRadius: round2.map(d => d.status === 'keep' ? 6 : 4),
+        pointHoverRadius: 8,
+        showLine: false,
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      title: {
+        display: true,
+        text: 'Round 2: Long-Context Optimization (32K ctx, 10×3000 tok) — 845 → 4,269 tok/s',
+        color: '#f0f6fc',
+        font: { size: 16, weight: '600' },
+        padding: { bottom: 16 }
+      },
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#21262d',
+        borderColor: '#30363d',
+        borderWidth: 1,
+        titleColor: '#f0f6fc',
+        bodyColor: '#c9d1d9',
+        callbacks: {
+          title: (items) => round2[items[0].dataIndex].label,
+          label: (item) => {
+            const d = round2[item.dataIndex];
+            return `${d.tok.toFixed(1)} tok/s [${d.status}]`;
+          }
+        }
+      },
+      annotation: {
+        annotations: {
+          phaseModel: {
+            type: 'line', xMin: paramsEnd2 - 0.5, xMax: paramsEnd2 - 0.5,
+            borderColor: '#8b949e', borderWidth: 1, borderDash: [5, 5],
+            label: { display: true, content: 'Model Code', color: '#8b949e', font: {size: 11}, position: 'start', yAdjust: -10 }
+          },
+          phaseKernel: {
+            type: 'line', xMin: kernelStart2 - 0.5, xMax: kernelStart2 - 0.5,
+            borderColor: '#8b949e', borderWidth: 1, borderDash: [5, 5],
+            label: { display: true, content: 'NKI Kernel', color: '#8b949e', font: {size: 11}, position: 'start', yAdjust: -10 }
+          },
+          bf16Label: {
+            type: 'label', xValue: 11, yValue: 1700,
+            content: ['BF16 softmax', '+38.4%'],
+            color: '#a371f7', font: {size: 11, weight: '600'},
+            backgroundColor: 'rgba(163,113,247,0.1)',
+            borderColor: '#a371f7', borderWidth: 1, borderRadius: 4,
+            padding: 4
+          },
+          flashLabel: {
+            type: 'label', xValue: 15, yValue: 3600,
+            content: ['NKI flash_attention', '+150% ★'],
+            color: '#f0883e', font: {size: 12, weight: '700'},
+            backgroundColor: 'rgba(240,136,62,0.1)',
+            borderColor: '#f0883e', borderWidth: 1, borderRadius: 4,
+            padding: 6
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { color: '#21262d' },
+        ticks: { color: '#8b949e', maxRotation: 45, font: { size: 10 } },
+      },
+      y: {
+        grid: { color: '#21262d' },
+        ticks: { color: '#8b949e', callback: v => v >= 1000 ? (v/1000).toFixed(1) + 'K tok/s' : v + ' tok/s' },
+        title: { display: true, text: 'Throughput (tok/s)', color: '#8b949e' },
+        min: 0, max: 4600
+      }
+    }
+  }
+});
+</script>
+
+</body>
+</html>
