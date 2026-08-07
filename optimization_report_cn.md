@@ -1,8 +1,7 @@
 # Tongyi-30B-A3B Prefill 性能优化报告
 
 **硬件**: AWS Trainium 2 (trn2.48xlarge)  
-**模型**: Qwen3MoE 30B total / 3B active, 128 experts, top-8  
-**最终结果**: 571 → 4,269 tok/s (7.5×), 100% correctness
+**模型**: Qwen3MoE 30B total / 3B active, 128 experts, top-8
 
 ---
 
@@ -10,7 +9,7 @@
 
 **基准配置**: TP=4, 16K context, 快速迭代（编译主导的工作负载）  
 **阶段**: Phase 1 (参数) + Phase 2 (模型代码) + Phase 3 (MoE 内核)  
-**结果**: 571 → 1,454 tok/s (+155%)
+**结果**: 571 → 1,454 tok/s (2.5× 加速), 100% correctness
 
 ### 成功的优化
 
@@ -56,8 +55,8 @@ Phase 3 花了大量精力（约 40 次实验）在 MoE CTE 内核微优化上�
 
 **基准配置**: TP=4, **32K context, 10 轮 × 3000 tokens**（累积到 30K+ 的 prior KV）  
 **阶段**: Phase 2 (模型代码，聚焦长上下文 attention) + Phase 3 (NKI 内核集成)  
-**Baseline**: 845 tok/s（新基准配置下）  
-**结果**: 845 → 4,269 tok/s (+405%)
+**Baseline**: 845 tok/s（新基准配置下，已包含第一轮所有优化）  
+**结果**: 845 → 4,269 tok/s (5.1× 加速), 100% correctness
 
 重新设计基准以暴露真正瓶颈：长上下文 attention，每个 chunk 需要 attend 到 ~30K 的 prior KV tokens。
 
@@ -98,13 +97,17 @@ Phase 3 花了大量精力（约 40 次实验）在 MoE CTE 内核微优化上�
 
 | | 第一轮 | 第二轮 |
 |---|--------|--------|
-| 基准 | 16K context, 快速编译 | 32K context, 10×3000 token 轮次 |
+| 基准配置 | 16K context, 快速编译 | 32K context, 10×3000 token 轮次 |
+| Baseline | 571 tok/s (未优化) | 845 tok/s (已含第一轮优化，更重的负载) |
+| 最终结果 | 1,454 tok/s | 4,269 tok/s |
+| 加速比 | **2.5×** | **5.1×** |
 | 暴露的瓶颈 | MoE（误判） | Attention 内存带宽 |
 | 总实验数 | ~60 | ~15 |
-| 总提升 | +155% (571→1,454) | +405% (845→4,269) |
 | 最大单步提升 | 去 mask/NaN (+16.2%) | NKI flash_attention (+150%) |
 | 方法 | 穷举微调 | 定向瓶颈消除 |
 | 关键教训 | MoE 内核已是最优 | Attention 带宽才是真正的墙 |
+
+注：两轮使用不同的 benchmark，加速比不能简单相乘。第二轮的 baseline (845 tok/s) 已包含第一轮所有优化，但由于负载更重（10×3000 tokens 累积到 30K context），吞吐低于第一轮最终值 (1,454 tok/s)。
 
 ---
 
@@ -122,5 +125,5 @@ Phase 3 花了大量精力（约 40 次实验）在 MoE CTE 内核微优化上�
 
 | 配置 | tok/s | Correctness | Baseline | 加速比 |
 |------|-------|-------------|----------|--------|
-| Medium (TP=4, 32K) | 4,269 | 100% | 571 | 7.5× |
+| Medium (TP=4, 32K) | 4,269 | 100% | 845 | 5.1× |
 | Full (TP=8, 128K) | 1,533 | 100% | 364.5 | 4.2× |

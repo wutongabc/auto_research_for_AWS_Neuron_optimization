@@ -50,13 +50,13 @@ fig.subplots_adjust(hspace=0.38, top=0.89, bottom=0.07, left=0.08, right=0.95)
 
 fig.suptitle('Tongyi-30B-A3B (Qwen3MoE) Prefill Throughput Optimization',
              fontsize=16, fontweight='bold', color='#f0f6fc', y=0.97)
-fig.text(0.5, 0.935, 'AWS Trainium 2  |  TP=4  |  100% correctness maintained throughout',
+fig.text(0.5, 0.935, 'AWS Trainium 2  |  TP=4  |  100% correctness  |  Two rounds, different benchmarks',
          ha='center', fontsize=10, color='#8b949e')
 
 # ══════════════════════════════════════════════════════════════════════
 # Round 1 chart
 # ══════════════════════════════════════════════════════════════════════
-ax1.set_title('Round 1: Short-Context (16K)  —  571 → 1,454 tok/s  (+155%)',
+ax1.set_title('Round 1: Short-Context (16K)  —  571 → 1,454 tok/s  (2.5× speedup)',
               fontsize=12, fontweight='bold', color='#c9d1d9', pad=14)
 
 x1 = np.arange(len(r1_labels))
@@ -95,7 +95,7 @@ ax1.grid(True, axis='y', alpha=0.5)
 # ══════════════════════════════════════════════════════════════════════
 # Round 2 chart
 # ══════════════════════════════════════════════════════════════════════
-ax2.set_title('Round 2: Long-Context (32K, 10×3000 tok)  —  845 → 4,269 tok/s  (+405%)',
+ax2.set_title('Round 2: Long-Context (32K, 10×3000 tok)  —  845 → 4,269 tok/s  (5.1× speedup)',
               fontsize=12, fontweight='bold', color='#c9d1d9', pad=14)
 
 x2 = np.arange(len(r2_labels))

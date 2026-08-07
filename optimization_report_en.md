@@ -1,8 +1,7 @@
 # Tongyi-30B-A3B Prefill Optimization Report
 
 **Hardware**: AWS Trainium 2 (trn2.48xlarge)  
-**Model**: Qwen3MoE 30B total / 3B active, 128 experts, top-8 routing  
-**Final Result**: 571 → 4,269 tok/s (7.5×), 100% correctness
+**Model**: Qwen3MoE 30B total / 3B active, 128 experts, top-8 routing
 
 ---
 
@@ -10,7 +9,7 @@
 
 **Benchmark**: TP=4, 16K context, fast iteration (compile-dominated workloads)  
 **Duration**: Phase 1 (params) + Phase 2 (model code) + Phase 3 (MoE kernel)  
-**Result**: 571 → 1,454 tok/s (+155%)
+**Result**: 571 → 1,454 tok/s (2.5× speedup), 100% correctness
 
 ### Successful Optimizations
 
@@ -56,8 +55,8 @@ Phase 3 spent extensive effort (~40 experiments) on MoE CTE kernel micro-optimiz
 
 **Benchmark**: TP=4, **32K context, 10 turns × 3000 tokens** (accumulates to 30K+ prior KV)  
 **Duration**: Phase 2 (model code, long-context attention focus) + Phase 3 (NKI kernel integration)  
-**Baseline**: 845 tok/s (new benchmark configuration)  
-**Result**: 845 → 4,269 tok/s (+405%)
+**Baseline**: 845 tok/s (new benchmark configuration, with Round 1 optimizations already applied)  
+**Result**: 845 → 4,269 tok/s (5.1× speedup), 100% correctness
 
 The benchmark was redesigned to expose the real bottleneck: long-context attention where each chunk must attend to ~30K prior KV tokens.
 
@@ -99,12 +98,16 @@ The benchmark was redesigned to expose the real bottleneck: long-context attenti
 | | Round 1 | Round 2 |
 |---|---------|---------|
 | Benchmark | 16K context, fast compile | 32K context, 10×3000 token turns |
+| Baseline | 571 tok/s (unoptimized) | 845 tok/s (Round 1 opts applied, harder benchmark) |
+| Final | 1,454 tok/s | 4,269 tok/s |
+| Speedup | **2.5×** | **5.1×** |
 | Bottleneck exposed | MoE (incorrectly) | Attention memory bandwidth |
 | Total experiments | ~60 | ~15 |
-| Total gain | +155% (571→1,454) | +405% (845→4,269) |
 | Largest single gain | Remove mask/NaN (+16.2%) | NKI flash_attention (+150%) |
 | Approach | Exhaustive micro-tuning | Targeted bottleneck elimination |
 | Key lesson | MoE kernel was already optimal | Attention bandwidth is the real wall |
+
+Note: The two rounds use different benchmarks, so their speedups are not directly multiplicative. Round 2's baseline (845 tok/s) already includes all Round 1 optimizations but runs a heavier workload (10×3000 tokens accumulating to 30K context vs Round 1's shorter sequences).
 
 ---
 
@@ -122,5 +125,5 @@ The final system is **memory-bandwidth bound**:
 
 | Config | tok/s | Correctness | Baseline | Speedup |
 |--------|-------|-------------|----------|---------|
-| Medium (TP=4, 32K) | 4,269 | 100% | 571 | 7.5× |
+| Medium (TP=4, 32K) | 4,269 | 100% | 845 | 5.1× |
 | Full (TP=8, 128K) | 1,533 | 100% | 364.5 | 4.2× |
