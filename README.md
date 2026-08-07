@@ -4,6 +4,20 @@ Autonomous optimization loop for Tongyi-30B-A3B (Qwen3MoE) prefill throughput on
 
 Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) — an AI agent iterates on model serving configuration, vLLM model code, and NKI kernels to maximize prefill tok/s.
 
+## Results
+
+Two rounds of auto-research, each ~12 hours, different benchmarks:
+
+| Round | Benchmark | Baseline | Final | Speedup |
+|-------|-----------|----------|-------|---------|
+| 1 (short-context) | TP=4, 16K ctx | 571 tok/s | 1,454 tok/s | **2.5×** |
+| 2 (long-context) | TP=4, 32K ctx, 10×3000 tok | 845 tok/s | 4,269 tok/s | **5.1×** |
+| Full validation | TP=8, 128K ctx | 364.5 tok/s | 1,533 tok/s | **4.2×** |
+
+100% top-1 logit correctness maintained throughout.
+
+![Optimization Timeline](optimization_timeline.png)
+
 ## Structure
 
 ```
