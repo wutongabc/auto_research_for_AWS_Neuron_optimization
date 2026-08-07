@@ -3,6 +3,15 @@
 **Hardware**: AWS Trainium 2 (trn2.48xlarge)  
 **Model**: Qwen3MoE 30B total / 3B active, 128 experts, top-8 routing
 
+## End-to-End Results
+
+| Benchmark | Unoptimized | After Round 1 | After Round 2 | Total Speedup |
+|-----------|-------------|---------------|---------------|---------------|
+| Medium (TP=4, 32K ctx, 10×3000 tok) | 712 tok/s | 845 tok/s | 4,269 tok/s | **6.0×** |
+| Full (TP=8, 128K ctx, 42×3000 tok) | 258 tok/s | 365 tok/s | 1,533 tok/s | **5.9×** |
+
+All measurements at 100% top-1 logit correctness. Unoptimized baselines measured retroactively on the same hardware with stock vLLM-Neuron code and default parameters.
+
 ---
 
 ## Round 1: Short-Context Optimization

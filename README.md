@@ -6,22 +6,21 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) �
 
 ## Results
 
-Two rounds of auto-research, each ~12 hours, different benchmarks:
+Two rounds of auto-research, each ~12 hours. End-to-end speedup measured on consistent benchmarks across all time-points:
 
-| Round | Benchmark | Baseline | Final | Speedup |
-|-------|-----------|----------|-------|---------|
-| 1 (short-context) | TP=4, 16K ctx | 571 tok/s | 1,454 tok/s | **2.5×** |
-| 2 (long-context) | TP=4, 32K ctx, 10×3000 tok | 845 tok/s | 4,269 tok/s | **5.1×** |
-| Full validation | TP=8, 128K ctx | 364.5 tok/s | 1,533 tok/s | **4.2×** |
+| Benchmark | Unoptimized | After Round 1 | After Round 2 | Total Speedup |
+|-----------|-------------|---------------|---------------|---------------|
+| Medium (TP=4, 32K ctx, 10×3000 tok) | 712 tok/s | 845 tok/s | 4,269 tok/s | **6.0×** |
+| Full (TP=8, 128K ctx, 42×3000 tok) | 258 tok/s | 365 tok/s | 1,533 tok/s | **5.9×** |
 
 100% top-1 logit correctness maintained throughout.
 
-**Baseline notes:**
-- Round 1 baseline (571 tok/s): unoptimized vLLM-Neuron default serving config on short-context benchmark.
-- Round 2 baseline (845 tok/s): Round 1 optimizations already applied, but measured on a harder long-context benchmark (10 turns × 3000 tokens accumulating to 30K+ context). The heavier workload makes the number lower than Round 1's final 1,454 tok/s.
-- Full validation baseline (364.5 tok/s): Round 1 optimizations applied, TP=8, 128K context. This was measured at the end of Round 1 — the original unoptimized code was never tested on the full 128K benchmark (estimated <200 tok/s based on scaling).
+**Per-round gains:**
 
-> Unoptimized baseline on full 128K and tests on other models (Llama, DeepSeek) are in progress.
+| Round | Focus | Medium Gain | Full Gain |
+|-------|-------|-------------|-----------|
+| 1 | Param tuning (segment size, KV dtype, block size) | 712 → 845 (+19%) | 258 → 365 (+41%) |
+| 2 | Model code (GQA broadcast, BF16 attention) + NKI flash_attention | 845 → 4,269 (+405%) | 365 → 1,533 (+320%) |
 
 ![Optimization Timeline](optimization_timeline.png)
 

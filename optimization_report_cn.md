@@ -3,6 +3,15 @@
 **硬件**: AWS Trainium 2 (trn2.48xlarge)  
 **模型**: Qwen3MoE 30B total / 3B active, 128 experts, top-8
 
+## 端到端结果
+
+| 基准 | 未优化 | 第一轮后 | 第二轮后 | 总加速比 |
+|------|--------|----------|----------|----------|
+| Medium (TP=4, 32K ctx, 10×3000 tok) | 712 tok/s | 845 tok/s | 4,269 tok/s | **6.0×** |
+| Full (TP=8, 128K ctx, 42×3000 tok) | 258 tok/s | 365 tok/s | 1,533 tok/s | **5.9×** |
+
+所有测量保持 100% top-1 logit 正确性。未优化 baseline 使用原始 vLLM-Neuron 代码和默认参数在同一硬件上补测。
+
 ---
 
 ## 第一轮：短上下文优化
