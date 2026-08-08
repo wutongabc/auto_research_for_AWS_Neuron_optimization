@@ -13,7 +13,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ZIGENG_ROOT="${ZIGENG_ROOT:-/dev3/zigeng}"
 BC_ROOT="${BC_ROOT:-/dev3/zigeng/bc}"
 BROWSECOMP_ROOT="$BC_ROOT/BrowseComp-Plus"
-VLLM_FORK="${VLLM_FORK:-$BC_ROOT/vllm-neuron}"
+VLLM_FORK="${VLLM_FORK:-$REPO_ROOT/vllm-neuron}"
 HF_CACHE_DIR="${HF_CACHE_DIR:-$BROWSECOMP_ROOT/local_models/huggingface}"
 LOCAL_MODELS_DIR="$REPO_ROOT/local-models"
 

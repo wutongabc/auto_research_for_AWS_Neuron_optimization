@@ -1,0 +1,2 @@
+[vllm.platform_plugins]
+neuron = vllm_neuron:register

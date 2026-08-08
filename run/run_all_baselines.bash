@@ -36,7 +36,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-VLLM_FORK="/dev3/zigeng/bc/vllm-neuron"
+VLLM_FORK="/dev3/zigeng/bc/opt/vllm-neuron"
 NKILIB_FORK="$REPO_ROOT/nkilib-fork"
 RESULTS_DIR="$REPO_ROOT/benchmark/baseline_results"
 CONTAINER="neuron-prefill"

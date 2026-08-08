@@ -6,7 +6,7 @@ from importlib.machinery import PathFinder
 import importlib
 import sys
 
-_UPSTREAM_INIT = "/dev3/zigeng/bc/vllm-neuron/vllm_neuron/__init__.py"
+_UPSTREAM_INIT = "/dev3/zigeng/bc/opt/vllm-neuron/vllm_neuron/__init__.py"
 with open(_UPSTREAM_INIT, "rb") as _source:
     exec(compile(_source.read(), _UPSTREAM_INIT, "exec"), globals(), globals())
 

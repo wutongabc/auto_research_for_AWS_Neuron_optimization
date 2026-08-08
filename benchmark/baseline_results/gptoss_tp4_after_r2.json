@@ -1,0 +1,101 @@
+{
+  "summary": {
+    "avg_prefill_tok_per_s": 548.7,
+    "avg_tok_per_s_all": 549.0,
+    "mfu_percent": 0.2,
+    "correctness_pct": 100.0,
+    "total_turns": 5,
+    "scoring_turns": 3,
+    "compile_time_s": 0.0,
+    "peak_hbm_mb": 0.0
+  },
+  "per_turn": [
+    {
+      "turn": 1,
+      "new_tokens": 3000,
+      "total_context": 3000,
+      "prefill_time_ms": 5459.7418360062875,
+      "tok_per_s": 549.4765302299443
+    },
+    {
+      "turn": 2,
+      "new_tokens": 3000,
+      "total_context": 6000,
+      "prefill_time_ms": 5461.234497997793,
+      "tok_per_s": 549.32634756846
+    },
+    {
+      "turn": 3,
+      "new_tokens": 3000,
+      "total_context": 9000,
+      "prefill_time_ms": 5464.240154993604,
+      "tok_per_s": 549.0241854136647
+    },
+    {
+      "turn": 4,
+      "new_tokens": 3000,
+      "total_context": 12000,
+      "prefill_time_ms": 5467.679014996975,
+      "tok_per_s": 548.6788803387099
+    },
+    {
+      "turn": 5,
+      "new_tokens": 3000,
+      "total_context": 15000,
+      "prefill_time_ms": 5469.529127993155,
+      "tok_per_s": 548.4932852164444
+    },
+    {
+      "turn": 6,
+      "new_tokens": 3000,
+      "total_context": 18000,
+      "prefill_time_ms": -1,
+      "tok_per_s": 0,
+      "error": true
+    },
+    {
+      "turn": 7,
+      "new_tokens": 3000,
+      "total_context": 21000,
+      "prefill_time_ms": -1,
+      "tok_per_s": 0,
+      "error": true
+    },
+    {
+      "turn": 8,
+      "new_tokens": 3000,
+      "total_context": 24000,
+      "prefill_time_ms": -1,
+      "tok_per_s": 0,
+      "error": true
+    },
+    {
+      "turn": 9,
+      "new_tokens": 3000,
+      "total_context": 27000,
+      "prefill_time_ms": -1,
+      "tok_per_s": 0,
+      "error": true
+    },
+    {
+      "turn": 10,
+      "new_tokens": 3000,
+      "total_context": 30000,
+      "prefill_time_ms": -1,
+      "tok_per_s": 0,
+      "error": true
+    }
+  ],
+  "config": {
+    "model_name": "gpt-oss-20b-tp4-after_r2",
+    "base_url": "http://localhost:8200",
+    "tokenizer": "openai/gpt-oss-20b",
+    "tokens_per_turn": 3000,
+    "num_turns": 10,
+    "num_cores": 4,
+    "peak_tflops_per_core": 380.0,
+    "active_params_b": 3.8,
+    "baseline_logits_save_path": "benchmark/baseline_logits_gptoss_short.json",
+    "results_output": "benchmark/baseline_results/gptoss_tp4_after_r2.json"
+  }
+}

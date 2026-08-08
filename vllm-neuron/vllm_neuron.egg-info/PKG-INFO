@@ -1,0 +1,53 @@
+Metadata-Version: 2.4
+Name: vllm-neuron
+Version: 0.21.0.1.0.0
+Summary: vLLM Neuron backend plugin
+Author: AWS Neuron team
+License-Expression: Apache-2.0
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Requires-Python: >=3.11
+License-File: LICENSE
+License-File: NOTICE
+Requires-Dist: setuptools-scm>=8
+Requires-Dist: urllib3>=2.6.0
+Requires-Dist: vllm==0.21.0
+Requires-Dist: fastapi[standard]<0.137,>=0.115.0
+Requires-Dist: transformers<6.0.0,>=5.5.1
+Requires-Dist: prometheus_client
+Requires-Dist: ml_dtypes
+Requires-Dist: nixl
+Requires-Dist: psutil
+Requires-Dist: requests
+Requires-Dist: boto3
+Requires-Dist: datasets
+Requires-Dist: lm-eval[api,ifeval]
+Provides-Extra: test
+Requires-Dist: torch; extra == "test"
+Requires-Dist: numpy; extra == "test"
+Requires-Dist: transformers<6.0.0,>=5.5.1; extra == "test"
+Requires-Dist: pytest; extra == "test"
+Requires-Dist: pytest-cov; extra == "test"
+Requires-Dist: pytest-forked; extra == "test"
+Requires-Dist: pytest-mock; extra == "test"
+Requires-Dist: pytest-xdist; extra == "test"
+Requires-Dist: pytest-split; extra == "test"
+Requires-Dist: pytest-timeout; extra == "test"
+Requires-Dist: pytest-md-report; extra == "test"
+Requires-Dist: pre-commit; extra == "test"
+Requires-Dist: psutil; extra == "test"
+Requires-Dist: mpi4py; extra == "test"
+Requires-Dist: requests; extra == "test"
+Requires-Dist: boto3; extra == "test"
+Requires-Dist: s5cmd; extra == "test"
+Requires-Dist: datasets; extra == "test"
+Requires-Dist: coverage[toml]; extra == "test"
+Requires-Dist: slipcover; extra == "test"
+Requires-Dist: hypothesis; extra == "test"
+Requires-Dist: plotly; extra == "test"
+Requires-Dist: plotext; extra == "test"
+Requires-Dist: accelerate; extra == "test"
+Requires-Dist: matplotlib; extra == "test"
+Requires-Dist: perfetto; extra == "test"
+Dynamic: license-file
