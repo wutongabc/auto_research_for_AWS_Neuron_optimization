@@ -780,7 +780,7 @@ class Qwen3MoeExperts(nn.Module):
         self.dtype = config.torch_dtype
         self.rms_norm_eps = config.rms_norm_eps
         self.norm_topk_prob = config.norm_topk_prob
-        self.block_size = 256
+        self.block_size = 128
 
         from vllm.config import get_current_vllm_config
 
