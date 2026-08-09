@@ -487,8 +487,6 @@ class Qwen3Attention(nn.Module):
                     "cached_seq_len is required when segmented prefill is enabled"
                 )
             # Gather prior KV from cache BEFORE writing current chunk.
-            # This removes the write→read dependency, allowing the compiler to
-            # overlap the gather with earlier computation.
             bt = block_table[0].to(torch.int64).clamp_min(0)
             k_blocks = torch.index_select(self.k_cache, 0, bt)
             v_blocks = torch.index_select(self.v_cache, 0, bt)
@@ -504,16 +502,16 @@ class Qwen3Attention(nn.Module):
 
             # NKI flash_attention with k_prior/v_prior for segmented prefill
             attn_output = NF.flash_attention(
-                q,  # [B_q=8, S_q=1024, D=128], tp_q=True
-                k,  # [B_kv=1, S_q=1024, D=128], tp_k=True
-                v,  # [B_kv=1, S_q=1024, D=128]
+                q,  # [B_q=8, S_q=4096, D=128], tp_q=True
+                k,  # [B_kv=1, S_q=4096, D=128], tp_k=True
+                v,  # [B_kv=1, S_q=4096, D=128]
                 scale=self.scaling,
                 causal_mask=True,
                 tp_q=True,
                 tp_k=True,
                 tp_out=True,
-                k_prior=k_prior,  # [B_kv=1, padded_kv_len=32768, D=128]
-                v_prior=v_prior,  # [B_kv=1, padded_kv_len=32768, D=128]
+                k_prior=k_prior,
+                v_prior=v_prior,
                 prior_used_len=prior_used_len,
             )
         else:
