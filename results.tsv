@@ -136,3 +136,14 @@ model_len_opt	3	4266.3	1.7	100.0	0.0	keep	MAX_MODEL_LEN=30208 + O3 (two runs: 42
 final_full_val	full	1521.1	0.3	100.0	0.0	keep	FINAL FULL VALIDATION with O3: TP=8, 128K ctx, 42/42 turns, 100% correct (4.17x baseline)
 phase3_final	3	4269.0	1.7	100.0	0.0	keep	Phase 3 final: medium benchmark cold-run confirmation (MAX_MODEL_LEN=30208, O3, 8K flash sections, _MAX_SEQLEN=132096)
 full_val_final2	full	1533.2	0.3	100.0	211.0	keep	FULL MODEL FINAL: TP=8, 128K ctx, 42/42 turns, 100% correct, 4.21x baseline (364.5)
+580d51e	3	4287.5	1.7	100.0	0.0	discard	BLOCK_PARALLEL_FACTOR=4 with 4096 bucket (avg 4287 vs 4350 baseline)
+3072-bucket	2321.6	100.0	DISCARD	3072 non-power-of-2 bucket catastrophic for Neuron compute (47% regression vs 4350 baseline)
+mac-threshold-100k	4310.1	100.0	DISCARD	modular-flow-mac-threshold=100000 no improvement vs 10 (4310 vs 4350)
+O2-optimization	4303.0	100.0	DISCARD	O2 same as O1 (4303 vs 4350), compile 4x slower
+2048-bucket	3908.9	100.0	DISCARD	2048 bucket needs 2 chunks for 3000 tokens (760ms vs 650ms for 4096)
+moe-block-size-256	4455.8	100.0	KEEP	block_size=256 reduces MoE iterations, +2.4% over baseline
+moe-block-size-512	4302.7	100.0	DISCARD	block_size=512 worse than 256 due to intra-block padding waste
+fp8-kv-cache	0	0	DISCARD	FP8 KV cache fails: nisa.dma_transpose doesn't support f8E4M3 on trn2
+gup-coalesce-4	4446.5	100.0	DISCARD	GUP_LOAD_COALESCE_FACTOR=4 no improvement over GCF=2 (4447 vs 4456)
+fp8_moe_kernel_dequant	4408.3	100.0	DISCARD	FP8 expert weights + kernel dequant (slight regression, dma not bottleneck)
+bpf4_bs256	3	4635.5	1.8	100.0	375.0	keep	BLOCK_PARALLEL_FACTOR=4 with block_size=256 (two runs: 4619.6, 4651.4; +4.0% over prev best 4455.8)
