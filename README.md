@@ -6,6 +6,8 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) �
 
 ## Results
 
+### Qwen3MoE (Tongyi-30B-A3B)
+
 Two rounds of auto-research, each ~12 hours. End-to-end speedup measured on consistent benchmarks across all time-points:
 
 | Benchmark | Unoptimized | After Round 1 | After Round 2 | Total Speedup |
@@ -21,6 +23,17 @@ Two rounds of auto-research, each ~12 hours. End-to-end speedup measured on cons
 |-------|-------|-------------|-----------|
 | 1 | Param tuning (segment size, KV dtype, block size) | 712 → 845 (+19%) | 258 → 365 (+41%) |
 | 2 | Model code (GQA broadcast, BF16 attention) + NKI flash_attention | 845 → 4,269 (+405%) | 365 → 1,533 (+320%) |
+
+### GPT-OSS (20B, MoE)
+
+Two rounds of auto-research on a different MoE model. Short benchmark (≤15K context, 3000 tok/turn):
+
+| Benchmark | Unoptimized (TP=1) | After Round 1 (TP=2) | After Round 2 (TP=3) | Total Speedup |
+|-----------|---------------------|----------------------|----------------------|---------------|
+| Short (≤15K ctx, 5×3000 tok) | 284 tok/s | 626 tok/s | 1,135 tok/s | **4.0×** |
+
+100% top-1 logit correctness maintained throughout.
+
 
 ![Optimization Timeline](optimization_timeline.png)
 
