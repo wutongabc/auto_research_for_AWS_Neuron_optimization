@@ -147,3 +147,4 @@ fp8-kv-cache	0	0	DISCARD	FP8 KV cache fails: nisa.dma_transpose doesn't support 
 gup-coalesce-4	4446.5	100.0	DISCARD	GUP_LOAD_COALESCE_FACTOR=4 no improvement over GCF=2 (4447 vs 4456)
 fp8_moe_kernel_dequant	4408.3	100.0	DISCARD	FP8 expert weights + kernel dequant (slight regression, dma not bottleneck)
 bpf4_bs256	3	4635.5	1.8	100.0	375.0	keep	BLOCK_PARALLEL_FACTOR=4 with block_size=256 (two runs: 4619.6, 4651.4; +4.0% over prev best 4455.8)
+local_moe_allreduce	3	5175.4	2.0	100.0	315.0	keep	local MoE: skip all_gather, process T_local tokens, all_reduce output (two runs: 5167.8, 5183.0; +11.6% over BPF=4, +16.1% over prev best)
