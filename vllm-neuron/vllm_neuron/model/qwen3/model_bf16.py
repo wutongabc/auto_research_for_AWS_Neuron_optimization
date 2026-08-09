@@ -1029,23 +1029,14 @@ class Qwen3MoeExperts(nn.Module):
             )
             router_probs = F.softmax(router_logits, dim=-1)
             expert_affinities = router_probs * (nki_affinities != 0)
-        if self.world_size > 1:
-            expert_affinities = self.tp_group.all_gather(expert_affinities, dim=0)
-            hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
 
+        # Process MoE on local tokens only (skip all_gather), use all_reduce
+        # for TP reduction. This reduces MoE kernel work by TP factor.
+        local_tokens = hidden_states.shape[0]
         last_real_idx = torch.argmax(positions)
-        token_indices = torch.arange(positions.shape[0], device=positions.device)
-        padding_mask = token_indices <= last_real_idx
-        if self.ep_enabled:
-            local_indices = torch.arange(
-                self.ep_rank * self.num_experts,
-                (self.ep_rank + 1) * self.num_experts,
-                device=hidden_states.device,
-                dtype=torch.int32,
-            )
-            expert_affinities = NF.get_local_expert_affinities(
-                expert_affinities, local_indices
-            )
+        local_start = self.tp_group.rank_in_group * local_tokens
+        local_indices = torch.arange(local_tokens, device=positions.device) + local_start
+        padding_mask = local_indices <= last_real_idx
 
         (
             expert_affinities_masked,
@@ -1058,7 +1049,7 @@ class Qwen3MoeExperts(nn.Module):
             num_experts_per_token=self.top_k,
             block_size=self.block_size,
             moe_group=self.ep_tp_group,
-            tp_degree=self.tp_degree,
+            tp_degree=1,
             padding_mask=padding_mask,
         )
         output = NF.moe_cte(
@@ -1079,7 +1070,7 @@ class Qwen3MoeExperts(nn.Module):
             compute_dtype=nl.bfloat16,
         )
         if self.world_size > 1:
-            output = self.tp_group.reduce_scatter(output, dim=0)
+            output = self.tp_group.all_reduce(output)
         return output
 
 
