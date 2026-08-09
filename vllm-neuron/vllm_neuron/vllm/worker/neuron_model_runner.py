@@ -1273,7 +1273,7 @@ class NeuronModelRunner(KVConnectorModelRunnerMixin):
         self.compile_options = {}
 
         # FIXME: -O1 and mac-threshold are temporary until NKI adds MAC count estimates for kernels.
-        hlo2tensorizer_opts = "--modular-flow-mac-threshold=100000"
+        hlo2tensorizer_opts = "--modular-flow-mac-threshold=10"
         # The unsafe fp8 cast flag is only needed on Trn2 where kernels use
         # legacy nl.float8_e4m3 (max=240). Trn3 supports OCP e4m3fn natively.
         from vllm_neuron.compile.platform import get_platform_target
