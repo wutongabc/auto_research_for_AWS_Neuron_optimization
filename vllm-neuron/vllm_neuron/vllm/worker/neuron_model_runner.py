@@ -1292,6 +1292,8 @@ class NeuronModelRunner(KVConnectorModelRunnerMixin):
             f"-O{self.vllm_config.optimization_level.value}",
             f"--internal-hlo2tensorizer-options={hlo2tensorizer_opts}",
             "--internal-backend-options=--enable-verifier=false",
+            "--model-type=transformer",
+            "--enable-fast-loading-neuron-binaries",
         ]
         logger.info(
             "neuronx-cc optlevel -O%s (from vLLM optimization_level)",
