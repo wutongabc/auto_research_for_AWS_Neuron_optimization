@@ -212,7 +212,7 @@ def validate_num_seqs_buckets(
 
 
 # Segment sizes currently supported by the segmented attention NKI kernel.
-SUPPORTED_KV_SEGMENT_SIZES = {512, 1024, 2048, 3072, 4096, 8192}
+SUPPORTED_KV_SEGMENT_SIZES = {512, 1024, 2048, 4096, 8192}
 
 # Upper bound on max_model_len for which single-shot prefill
 # (max_num_batched_tokens == max_model_len) is permitted. Above this,
