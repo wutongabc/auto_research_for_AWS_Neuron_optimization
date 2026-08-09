@@ -241,10 +241,7 @@ def bwmm_shard_on_block(
     else:
         output = nl.ndarray((dims.T, dims.H), dtype=hidden_states.dtype, buffer=nl.shared_hbm)
 
-    # FP8 dequantization: load per-expert scalar scales when quantized weights are provided.
-    # gate_up_proj_scale shape: [E, 2, 1] — per-expert, per-gate/up scalar
-    # down_proj_scale shape: [E, 1] — per-expert scalar
-    # gup_scale/down_scale are set dynamically per-block inside the loop.
+    # Placeholder for FP8
     gup_scale = None
     down_scale = None
     n_blocks_per_shard = div_ceil(NUM_STATIC_BLOCKS, num_shards)
@@ -672,32 +669,6 @@ def bwmm_shard_on_block(
 
                     # TODO: PRE_SCALE_DELAYED support is still under development
                     expert_affinity_T_broadcasted = None
-
-                    # FP8 dequant: apply per-expert gate/up scales to projected states
-                    if cfg.is_quant and gate_up_proj_scale is not None:
-                        # gate_up_proj_scale: [E, 2, 1] — per-expert scalar scales
-                        # Load gate_scale and up_scale for current expert into SBUF
-                        _scale_buf = nl.ndarray((TILE_SIZE, 2), dtype=nl.float32, buffer=nl.sbuf)
-                        nisa.dma_copy(
-                            dst=_scale_buf[0:1, 0:2],
-                            src=gate_up_proj_scale.reshape((gate_up_proj_scale.shape[0], 2)).ap(
-                                pattern=[[2, 1], [1, 2]],
-                                scalar_offset=real_expert,
-                            ),
-                        )
-                        # Build per-tile scale buffers for compute_intermediate_states
-                        # Broadcast to [TILE_SIZE, 1] for each gate/up via stream_shuffle
-                        _gate_scale = nl.ndarray((TILE_SIZE, 1), dtype=nl.float32, buffer=nl.sbuf)
-                        _up_scale = nl.ndarray((TILE_SIZE, 1), dtype=nl.float32, buffer=nl.sbuf)
-                        nisa.tensor_copy(dst=_gate_scale[0:1, 0:1], src=_scale_buf[0:1, 0:1])
-                        nisa.tensor_copy(dst=_up_scale[0:1, 0:1], src=_scale_buf[0:1, 1:2])
-                        stream_shuffle_broadcast(_gate_scale[0:1, 0:1], _gate_scale[0:TILE_SIZE, 0:1])
-                        stream_shuffle_broadcast(_up_scale[0:1, 0:1], _up_scale[0:TILE_SIZE, 0:1])
-                        gup_scale = []
-                        for _i in range(dims.gup_tile_count):
-                            gup_scale.append([_gate_scale[0:TILE_SIZE, 0:1], _up_scale[0:TILE_SIZE, 0:1]])
-                    else:
-                        gup_scale = None
 
                     intermediate_states = compute_intermediate_states(
                         gate_and_up_proj_states_lst_sbuf,

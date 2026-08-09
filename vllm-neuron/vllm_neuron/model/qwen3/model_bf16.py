@@ -780,7 +780,7 @@ class Qwen3MoeExperts(nn.Module):
         self.dtype = config.torch_dtype
         self.rms_norm_eps = config.rms_norm_eps
         self.norm_topk_prob = config.norm_topk_prob
-        self.block_size = 256
+        self.block_size = 512
 
         from vllm.config import get_current_vllm_config
 
@@ -1047,14 +1047,6 @@ class Qwen3MoeExperts(nn.Module):
                 expert_affinities, local_indices
             )
 
-        if self.fp8_weights_enabled:
-            # Fold down_proj FP8 dequant scale into expert affinities.
-            # expert_affinities: [T, E], down_weights_scale: [E, 1]
-            # This corrects for the missing down_scale in the kernel:
-            # output = intermediate @ down_w_fp8 * (affinity * down_scale)
-            #        = intermediate @ (down_w_fp8 * down_scale) * affinity
-            expert_affinities = expert_affinities * self.down_weights_scale.squeeze(-1).unsqueeze(0)
-
         (
             expert_affinities_masked,
             token_position_to_id,
@@ -1069,22 +1061,13 @@ class Qwen3MoeExperts(nn.Module):
             tp_degree=self.tp_degree,
             padding_mask=padding_mask,
         )
-        if self.fp8_weights_enabled:
-            gate_up_w = self.gate_up_proj_weight_fp8
-            down_w = self.down_proj_weight_fp8
-            gup_scale = self.gate_up_weights_scale
-        else:
-            gate_up_w = self.gate_up_proj_weight
-            down_w = self.down_proj_weight
-            gup_scale = None
         output = NF.moe_cte(
             implementation=MoECTEImplementation.shard_on_block,
             conditions=conditions,
             hidden_states=hidden_states,
             expert_affinities_masked=expert_affinities_masked,
-            gate_up_proj_weight=gate_up_w,
-            down_proj_weight=down_w,
-            gate_up_proj_scale=gup_scale,
+            gate_up_proj_weight=self.gate_up_proj_weight,
+            down_proj_weight=self.down_proj_weight,
             activation_function=ActFnType.SiLU,
             block_size=self.block_size,
             token_position_to_id=token_position_to_id.to(torch.int32),
