@@ -1,0 +1,28 @@
+# Core dependencies with Neuron-compatible constraints
+setuptools-scm>=8
+urllib3>=2.6.0
+
+# vLLM installation
+vllm==0.21.0
+
+# Pin <0.137: 0.137's `_IncludedRouter` breaks prometheus-fastapi-instrumentator
+fastapi[standard]>=0.115.0,<0.137
+
+# Force transformers v5 upgrade
+transformers>=5.5.1,<6.0.0
+
+# Prometheus metrics
+prometheus_client
+
+# NKI CPU simulator dtype support
+ml_dtypes
+
+# NIXL KV transfer (disaggregated inference)
+nixl
+
+# benchmark dependency
+psutil
+requests
+boto3
+datasets
+lm-eval[api,ifeval]
