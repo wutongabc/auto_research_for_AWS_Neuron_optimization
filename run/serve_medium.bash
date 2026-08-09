@@ -37,6 +37,7 @@ SERVE_ARGS=(
     --host "$HOST"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
+    --optimization-level 1
     --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}}"
 )
 
