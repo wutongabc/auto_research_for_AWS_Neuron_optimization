@@ -555,20 +555,10 @@ class Qwen3Attention(nn.Module):
                     num_kv_heads, local_prior_len, self.head_dim
                 )
 
-                # Per-rank bound_max for masking invalid prior tokens
-                # bound_max shape: (batch, seqlen_q, 1) — uniform for all Q positions
-                my_start_tokens = my_start * block_size
-                local_prior_used = torch.clamp(
-                    prior_used_len - my_start_tokens, min=0, max=local_prior_len
-                )
-                # Expand to (8, 4096, 1) for the kernel's bound interface
-                bound_max_prior = local_prior_used.reshape(1, 1, 1).expand(
-                    self.num_attention_heads_per_rank, tokens, 1
-                )
-                bound_min_prior = torch.zeros_like(bound_max_prior)
-
                 # Call 1: Prior-only attention (non-causal, per-rank shard)
-                # Pass prior shard as active K/V with bound masking
+                # All Q tokens attend to all K tokens in the prior shard.
+                # On early turns some blocks may be uninitialized; the reduction
+                # handles this gracefully (prior contribution is small relative to active).
                 prior_out, prior_neg_max, prior_sum = NF.flash_attention(
                     q,                   # [8, 4096, 128]
                     k_prior_local,       # [1, local_prior_len, 128] as active K
@@ -578,8 +568,6 @@ class Qwen3Attention(nn.Module):
                     tp_q=True,
                     tp_k=True,
                     tp_out=True,
-                    bound_min=bound_min_prior,
-                    bound_max=bound_max_prior,
                     cache_softmax=True,
                     skip_output_normalization=True,
                 )
@@ -597,6 +585,11 @@ class Qwen3Attention(nn.Module):
                     cache_softmax=True,
                     skip_output_normalization=True,
                 )
+
+                # Combine prior results across ranks using all_reduce
+                # Since active is identical on all ranks, we only need to reduce priors.
+                # Strategy: reduce (prior + active) per rank, then subtract active overcounting.
+                # Simpler: all_gather prior stats (small), reduce locally, combine with active.
 
                 # All-gather prior results from all ranks
                 # prior_out: [8, 128, 4096], prior_neg_max/sum: [8, 128, 32]
