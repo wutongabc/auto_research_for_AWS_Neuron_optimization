@@ -8,12 +8,12 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) �
 
 ### Qwen3MoE (Tongyi-30B-A3B)
 
-Two rounds of auto-research, each ~12 hours. End-to-end speedup measured on consistent benchmarks across all time-points:
+Three rounds of auto-research. End-to-end speedup measured on consistent benchmarks across all time-points:
 
-| Benchmark | Unoptimized | After Round 1 | After Round 2 | Total Speedup |
-|-----------|-------------|---------------|---------------|---------------|
-| Medium (TP=4, 32K ctx, 10×3000 tok) | 712 tok/s | 845 tok/s | 4,269 tok/s | **6.0×** |
-| Full (TP=8, 128K ctx, 42×3000 tok) | 258 tok/s | 365 tok/s | 1,533 tok/s | **5.9×** |
+| Benchmark | Unoptimized | After Round 1 | After Round 2 | After Round 3 | Total Speedup |
+|-----------|-------------|---------------|---------------|---------------|---------------|
+| Medium (TP=4, 32K ctx, 10×3000 tok) | 712 tok/s | 845 tok/s | 4,269 tok/s | 12,503 tok/s | **17.6×** |
+| Full (TP=8, 128K ctx, 42×3000 tok) | 258 tok/s | 365 tok/s | 1,533 tok/s | TBD | — |
 
 100% top-1 logit correctness maintained throughout.
 
@@ -23,6 +23,7 @@ Two rounds of auto-research, each ~12 hours. End-to-end speedup measured on cons
 |-------|-------|-------------|-----------|
 | 1 | Param tuning (segment size, KV dtype, block size) | 712 → 845 (+19%) | 258 → 365 (+41%) |
 | 2 | Model code (GQA broadcast, BF16 attention) + NKI flash_attention | 845 → 4,269 (+405%) | 365 → 1,533 (+320%) |
+| 3 | Context Parallel + Local-Q (skip hidden all_gather, 4× less compute) | 4,269 → 12,503 (+193%) | TBD |
 
 ### GPT-OSS (20B, MoE)
 
