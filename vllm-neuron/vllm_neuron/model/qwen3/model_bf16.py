@@ -69,6 +69,40 @@ def _packed_fp8_viable_for_bucket(
     return _resize_block_len(block_len, bs, q_head, s_active, s_prior) >= 2
 
 
+def _online_softmax_reduce(
+    out_a: torch.Tensor, neg_max_a: torch.Tensor, sum_a: torch.Tensor,
+    out_b: torch.Tensor, neg_max_b: torch.Tensor, sum_b: torch.Tensor,
+) -> tuple:
+    """Online softmax reduction for combining two unnormalized partial attention outputs.
+
+    All inputs are unnormalized: out = exp(scores - local_max) @ V, sum = sum(exp(scores - local_max)).
+    neg_max = -max(scores) (negated).
+
+    Shapes:
+      out: [B, D, S_q] with tp_out=True (D=head_dim=128, S_q=4096)
+      neg_max: [B, 128, num_grps] (128=partition_rows=tokens_per_group, num_grps=S_q/128)
+      sum: [B, 128, num_grps]
+
+    Returns combined (out, neg_max, sum) still unnormalized.
+    """
+    neg_max_new = torch.minimum(neg_max_a, neg_max_b)
+
+    corr_a = torch.exp(neg_max_new - neg_max_a)  # [B, 128, num_grps], in (0, 1]
+    corr_b = torch.exp(neg_max_new - neg_max_b)
+
+    sum_new = sum_a * corr_a + sum_b * corr_b
+
+    # Expand correction to output shape [B, D, S_q]
+    # corr: [B, 128, num_grps] → transpose(1,2) → [B, num_grps, 128] → reshape → [B, S_q]
+    # Then unsqueeze(1) → [B, 1, S_q] to broadcast with [B, D, S_q]
+    B = corr_a.shape[0]
+    corr_a_expanded = corr_a.transpose(1, 2).reshape(B, -1).unsqueeze(1)  # [B, 1, S_q]
+    corr_b_expanded = corr_b.transpose(1, 2).reshape(B, -1).unsqueeze(1)
+    out_new = out_a * corr_a_expanded + out_b * corr_b_expanded
+
+    return out_new, neg_max_new, sum_new
+
+
 # ============================================================================
 # Config
 # ============================================================================
@@ -488,32 +522,136 @@ class Qwen3Attention(nn.Module):
                 )
             # Gather prior KV from cache BEFORE writing current chunk.
             bt = block_table[0].to(torch.int64).clamp_min(0)
-            k_blocks = torch.index_select(self.k_cache, 0, bt)
-            v_blocks = torch.index_select(self.v_cache, 0, bt)
             num_kv_heads = self.num_key_value_heads_per_rank
-            padded_kv_len = bt.shape[0] * block_size
-            k_prior = k_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
-            v_prior = v_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
 
             # Write current KV to cache (for next chunk's prior)
             self._write_paged_kv_cache(k, v, slot_mapping, block_size)
 
             prior_used_len = cached_seq_len.reshape(-1)[0:1]
 
-            # NKI flash_attention with k_prior/v_prior for segmented prefill
-            attn_output = NF.flash_attention(
-                q,  # [B_q=8, S_q=4096, D=128], tp_q=True
-                k,  # [B_kv=1, S_q=4096, D=128], tp_k=True
-                v,  # [B_kv=1, S_q=4096, D=128]
-                scale=self.scaling,
-                causal_mask=True,
-                tp_q=True,
-                tp_k=True,
-                tp_out=True,
-                k_prior=k_prior,
-                v_prior=v_prior,
-                prior_used_len=prior_used_len,
-            )
+            # === Context Parallel: dual-call with prior KV split across TP ranks ===
+            # Call 1: Each rank handles a DISJOINT shard of prior tokens (non-causal)
+            # Call 2: All ranks handle the active tokens identically (causal)
+            # Then online softmax reduction combines all partial results.
+            total_blocks = bt.shape[0]  # static: 472 for this model
+            blocks_per_rank = total_blocks // self.world_size  # static: 118
+            rank = self.tp_group.rank_in_group
+
+            if self.world_size > 1 and blocks_per_rank >= 1:
+                my_start = rank * blocks_per_rank
+                my_end = (rank + 1) * blocks_per_rank
+                if rank == self.world_size - 1:
+                    my_end = total_blocks
+
+                bt_local = bt[my_start:my_end]
+                k_blocks_local = torch.index_select(self.k_cache, 0, bt_local)
+                v_blocks_local = torch.index_select(self.v_cache, 0, bt_local)
+                local_num_blocks = my_end - my_start
+                local_prior_len = local_num_blocks * block_size
+                k_prior_local = k_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
+                v_prior_local = v_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
+
+                # Per-rank bound_max for masking invalid prior tokens
+                # bound_max shape: (batch, seqlen_q, 1) — uniform for all Q positions
+                my_start_tokens = my_start * block_size
+                local_prior_used = torch.clamp(
+                    prior_used_len - my_start_tokens, min=0, max=local_prior_len
+                )
+                # Expand to (8, 4096, 1) for the kernel's bound interface
+                bound_max_prior = local_prior_used.reshape(1, 1, 1).expand(
+                    self.num_attention_heads_per_rank, tokens, 1
+                )
+                bound_min_prior = torch.zeros_like(bound_max_prior)
+
+                # Call 1: Prior-only attention (non-causal, per-rank shard)
+                # Pass prior shard as active K/V with bound masking
+                prior_out, prior_neg_max, prior_sum = NF.flash_attention(
+                    q,                   # [8, 4096, 128]
+                    k_prior_local,       # [1, local_prior_len, 128] as active K
+                    v_prior_local,       # [1, local_prior_len, 128] as active V
+                    scale=self.scaling,
+                    causal_mask=False,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    bound_min=bound_min_prior,
+                    bound_max=bound_max_prior,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                )
+
+                # Call 2: Active-only attention (causal, identical on all ranks)
+                active_out, active_neg_max, active_sum = NF.flash_attention(
+                    q,    # [8, 4096, 128]
+                    k,    # [1, 4096, 128]
+                    v,    # [1, 4096, 128]
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                )
+
+                # All-gather prior results from all ranks
+                # prior_out: [8, 128, 4096], prior_neg_max/sum: [8, 128, 32]
+                all_prior_out = self.tp_group.all_gather(prior_out, dim=0)
+                all_prior_neg_max = self.tp_group.all_gather(prior_neg_max, dim=0)
+                all_prior_sum = self.tp_group.all_gather(prior_sum, dim=0)
+
+                # Online softmax reduction: combine all prior shards + active
+                num_q_heads = self.num_attention_heads_per_rank  # 8
+                combined_out = all_prior_out[:num_q_heads]
+                combined_neg_max = all_prior_neg_max[:num_q_heads]
+                combined_sum = all_prior_sum[:num_q_heads]
+
+                for r in range(1, self.world_size):
+                    chunk_out = all_prior_out[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_neg_max = all_prior_neg_max[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_sum = all_prior_sum[r * num_q_heads:(r + 1) * num_q_heads]
+                    combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                        combined_out, combined_neg_max, combined_sum,
+                        chunk_out, chunk_neg_max, chunk_sum,
+                    )
+
+                # Reduce with active attention (disjoint from prior)
+                combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                    combined_out, combined_neg_max, combined_sum,
+                    active_out, active_neg_max, active_sum,
+                )
+
+                # Final normalization: out / sum (clamp to avoid div-by-zero on turn 0)
+                B_heads = combined_sum.shape[0]
+                sum_recip = 1.0 / torch.clamp(combined_sum, min=1e-10)
+                sum_recip_expanded = sum_recip.transpose(1, 2).reshape(B_heads, -1).unsqueeze(1)
+                attn_output = combined_out * sum_recip_expanded
+
+            else:
+                # Fallback: original single-call path
+                k_blocks = torch.index_select(self.k_cache, 0, bt)
+                v_blocks = torch.index_select(self.v_cache, 0, bt)
+                padded_kv_len = bt.shape[0] * block_size
+                k_prior = k_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+                v_prior = v_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+
+                attn_output = NF.flash_attention(
+                    q,
+                    k,
+                    v,
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    k_prior=k_prior,
+                    v_prior=v_prior,
+                    prior_used_len=prior_used_len,
+                )
         else:
             self._write_paged_kv_cache(k, v, slot_mapping, block_size)
             k = k.repeat_interleave(self.num_key_value_groups, dim=0)
