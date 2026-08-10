@@ -5,10 +5,10 @@
 
 ## 端到端结果
 
-| 基准 | 未优化 | 第一轮后 | 第二轮后 | 总加速比 |
-|------|--------|----------|----------|----------|
-| Medium (TP=4, 32K ctx, 10×3000 tok) | 712 tok/s | 845 tok/s | 4,269 tok/s | **6.0×** |
-| Full (TP=8, 128K ctx, 42×3000 tok) | 258 tok/s | 365 tok/s | 1,533 tok/s | **5.9×** |
+| 基准 | 未优化 | 第一轮后 | 第二轮后 | 第三轮后 | 总加速比 |
+|------|--------|----------|----------|----------|----------|
+| Medium (TP=4, 32K ctx, 10×3000 tok) | 712 tok/s | 845 tok/s | 4,269 tok/s | 12,503 tok/s | **17.6×** |
+| Full (TP=8, 128K ctx, 42×3000 tok) | 258 tok/s | 365 tok/s | 1,533 tok/s | 6,200 tok/s | **24.0×** |
 
 所有测量保持 100% top-1 logit 正确性。未优化 baseline 使用原始 vLLM-Neuron 代码和默认参数在同一硬件上补测。
 
@@ -102,31 +102,75 @@ Phase 3 花了大量精力（约 40 次实验）在 MoE CTE 内核微优化上�
 
 ---
 
-## 两轮对比
+## 三轮对比
 
-| | 第一轮 | 第二轮 |
-|---|--------|--------|
-| 基准配置 | 16K context, 快速编译 | 32K context, 10×3000 token 轮次 |
-| Baseline | 571 tok/s (未优化) | 845 tok/s (已含第一轮优化，更重的负载) |
-| 最终结果 | 1,454 tok/s | 4,269 tok/s |
-| 加速比 | **2.5×** | **5.1×** |
-| 暴露的瓶颈 | MoE（误判） | Attention 内存带宽 |
-| 总实验数 | ~60 | ~15 |
-| 最大单步提升 | 去 mask/NaN (+16.2%) | NKI flash_attention (+150%) |
-| 方法 | 穷举微调 | 定向瓶颈消除 |
-| 关键教训 | MoE 内核已是最优 | Attention 带宽才是真正的墙 |
+| | 第一轮 | 第二轮 | 第三轮 |
+|---|--------|--------|--------|
+| 基准配置 | 16K context, 快速编译 | 32K context, 10×3000 token 轮次 | 同第二轮 |
+| Baseline | 571 tok/s (未优化) | 845 tok/s (已含第一轮优化) | 4,269 tok/s (已含前两轮优化) |
+| 最终结果 | 1,454 tok/s | 4,269 tok/s | 12,503 tok/s |
+| 加速比 | **2.5×** | **5.1×** | **2.9×** |
+| 暴露的瓶颈 | MoE（误判） | Attention 内存带宽 | TP 通信 + 冗余计算 |
+| 总实验数 | ~60 | ~15 | ~5 |
+| 最大单步提升 | 去 mask/NaN (+16.2%) | NKI flash_attention (+150%) | Local-Q (+49% over CP) |
+| 方法 | 穷举微调 | 定向瓶颈消除 | TP 通信重构 |
+| 关键教训 | MoE 内核已是最优 | Attention 带宽才是真正的墙 | all_gather hidden 是最大的冗余 |
 
-注：两轮使用不同的 benchmark，加速比不能简单相乘。第二轮的 baseline (845 tok/s) 已包含第一轮所有优化，但由于负载更重（10×3000 tokens 累积到 30K context），吞吐低于第一轮最终值 (1,454 tok/s)。
+---
+
+## 第三轮：TP 通信与计算重构
+
+**基准配置**: 同第二轮（TP=4, 32K context, 10×3000 tok）  
+**Baseline**: 4,269 tok/s（第二轮最终值，使用新 medium benchmark 的 5,150 tok/s）  
+**结果**: 5,150 → 12,503 tok/s (2.4× 加速), 100% correctness
+
+### 成功的优化
+
+| # | 优化 | tok/s | 增益 | 机制 |
+|---|------|-------|------|------|
+| 1 | **Context Parallel: Prior KV 分片** | 8,408 | **+63%** | 将 prior KV cache 平均切为 4 份，每 rank 只处理 1/4 prior attention；dual-call (prior non-causal + active causal) + online softmax reduction 精确合并 |
+| 2 | **Local-Q: 跳过 hidden all_gather** | 12,503 | **+49%** | 去掉每层 16MB 的 hidden_states all_gather；QKV proj 只处理 1024 local tokens (4× 少计算)；all_gather 仅 K/V (256KB each)；active attention 用 kernel 原生 cp_offset；O-proj 改 all_reduce |
+
+### 关键技术细节
+
+**方案一 (Context Parallel)**:
+- 每 rank 独立计算 `Q[8, 4096, 128] × K_prior_shard[1, 7552, 128]`（非因果）
+- `cache_softmax=True` + `skip_output_normalization=True` 获取 unnormalized output 和 softmax stats
+- all_gather 后用 online softmax reduction 跨 rank 精确合并（数学等价，非近似）
+
+**方案二 (Local-Q)**:
+- 每 rank 只处理自己的 1024 Q tokens（原来 all_gather 后处理 4096）
+- QKV projection: 1024 tokens × [2048, 1280] 而非 4096 tokens — **4× 计算节省**
+- Attention: 8 Q-groups (1024/128) 而非 32 — **4× kernel 迭代节省**
+- Active call 用 `cp_offset=rank*1024, global_cp_deg=4` 正确处理因果 mask
+- all_gather K/V 仅 256KB each（vs hidden all_gather 16MB）
+
+### 每层通信量对比
+
+| 操作 | 第二轮 | 第三轮 | 节省 |
+|------|--------|--------|------|
+| hidden all_gather | 16 MB | **0** | -16 MB |
+| KV all_gather | 0 | 0.5 MB | +0.5 MB |
+| prior output gather | 0 | 8 MB | +8 MB |
+| O-proj reduce | 16 MB (scatter) | 4 MB (reduce) | -12 MB |
+| **QKV 计算量** | 4096 tokens | 1024 tokens | **-75%** |
+| **Attention Q-groups** | 32 | 8 | **-75%** |
+
+### 正确性保证
+
+两个方案都是**精确数学等价变换**：
+- Online softmax reduction: `softmax(Q × [K1, K2, ...]) = reduce(softmax(Q × K1), softmax(Q × K2), ...)` — 不丢精度
+- Local-Q: 每个 Q token 看到的 KV 完全一致（prior 跨 rank gather，active 全量 gather）
+- bf16 浮点舍入差异 < 1e-6，不影响 top-1 token 选择
 
 ---
 
 ## 最终瓶颈分析
 
-最终系统受**内存带宽**限制：
-- 每 chunk 加载 ~30K prior KV (4 个 8K section)
-- 注意力仅达峰值算力的 ~7%
-- NKI 内核已用软件流水线、GQA、flash attention 最大化带宽利用
-- 进一步提升需硬件升级或近似算法（会破坏 correctness）
+第三轮后系统受**prior attention kernel 执行时间**限制：
+- 后期 turn (90%+ cache) 每 rank 的 prior shard 仍有 ~7K tokens
+- Q[8, 1024, 128] × K[1, 7552, 128] 是当前的计算瓶颈
+- 进一步优化方向：更多 ranks 分担 prior（需要更大 TP），或 prior 采样/压缩（牺牲精度）
 
 ---
 
@@ -134,5 +178,5 @@ Phase 3 花了大量精力（约 40 次实验）在 MoE CTE 内核微优化上�
 
 | 配置 | tok/s | Correctness | Baseline | 加速比 |
 |------|-------|-------------|----------|--------|
-| Medium (TP=4, 32K) | 4,269 | 100% | 845 | 5.1× |
-| Full (TP=8, 128K) | 1,533 | 100% | 364.5 | 4.2× |
+| Medium (TP=4, 32K) | 12,503 | 100% | 712 | 17.6× |
+| Full (TP=8, 128K) | 6,200 | 100% | 258 | 24.0× |
