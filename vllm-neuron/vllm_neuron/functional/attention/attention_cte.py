@@ -204,6 +204,8 @@ def flash_attention(
     prior_used_len: Optional[Tensor] = None,
     bound_min: Optional[Tensor] = None,
     bound_max: Optional[Tensor] = None,
+    cache_softmax: bool = False,
+    skip_output_normalization: bool = False,
 ) -> Union[Tensor, Tuple[Tensor, Tensor, Tensor]]:
     """
     Flash Attention API using attention_cte kernel with automatic PyTorch fallback.
@@ -313,8 +315,8 @@ def flash_attention(
             tp_q=tp_q,
             tp_k=tp_k,
             tp_out=tp_out,
-            cache_softmax=False,
-            softmax_dtype=torch.float32,
+            cache_softmax=cache_softmax,
+            skip_output_normalization=skip_output_normalization,
             cp_offset=cp_offset,
             global_cp_deg=global_cp_deg,
             cp_strided_q_slicing=cp_strided_q_slicing,
