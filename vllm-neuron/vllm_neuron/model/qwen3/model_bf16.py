@@ -353,6 +353,9 @@ class Qwen3Attention(nn.Module):
         self.k_scale_float = 1.0
         self.v_scale_float = 1.0
 
+        # CP offset for local-Q active attention (set after model load)
+        self._cp_offset = None
+
         self._setup_weight_loaders()
 
     def _setup_weight_loaders(self):
@@ -446,9 +449,7 @@ class Qwen3Attention(nn.Module):
                 attn_metadata,
             )
         else:
-            # >>> PARALLELISM: All-gather from SP before attention <<<
-            if self.world_size > 1:
-                hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
+            # >>> PARALLELISM: Local-Q path (no hidden all_gather) <<<
             return self.forward_prefill(
                 hidden_states,
                 positions,
@@ -465,18 +466,27 @@ class Qwen3Attention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attn_metadata: object | None = None,
     ) -> torch.Tensor:
-        """Prefill: QKV proj → QK norm → RoPE → flash attention → O proj."""
+        """Prefill: local-Q QKV proj → all_gather KV → CP attention → O proj → all_reduce."""
         if attn_metadata is None:
             return torch.zeros_like(hidden_states)
 
         hidden_states = hidden_states.to(self.dtype)
-        tokens, hidden = hidden_states.shape
+        local_tokens, hidden = hidden_states.shape
+        rank = self.tp_group.rank_in_group
 
-        # Step 1: Fused QKV Projection + QK RMSNorm + M-RoPE
+        # Slice position embeddings to local token range
         cos, sin = position_embeddings
-        cos_cache = cos.unsqueeze(0)
-        sin_cache = sin.unsqueeze(0)
+        if self.world_size > 1:
+            start = rank * local_tokens
+            cos_local = cos[start:start + local_tokens]
+            sin_local = sin[start:start + local_tokens]
+        else:
+            cos_local = cos
+            sin_local = sin
+        cos_cache = cos_local.unsqueeze(0)
+        sin_cache = sin_local.unsqueeze(0)
 
+        # QKV projection on LOCAL tokens only (4× less compute than full)
         qkv = NF.qkv_proj(
             hidden=hidden_states.unsqueeze(0),
             qkv_weights=self.qkv_proj_weight,
@@ -492,18 +502,26 @@ class Qwen3Attention(nn.Module):
             qk_norm_pre_rope_k_gamma=self.k_layernorm.weight.unsqueeze(0),
         ).squeeze(0)
 
-        q, k, v = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
+        q, k_local, v_local = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
         q = q.view(
-            tokens, self.num_attention_heads_per_rank, self.head_dim
+            local_tokens, self.num_attention_heads_per_rank, self.head_dim
         ).transpose(0, 1)
-        k = k.view(
-            tokens, self.num_key_value_heads_per_rank, self.head_dim
+        k_local = k_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
         ).transpose(0, 1)
-        v = v.view(
-            tokens, self.num_key_value_heads_per_rank, self.head_dim
+        v_local = v_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
         ).transpose(0, 1)
 
-        # Write K/V into paged cache (handles FP8 quantization + packed layout)
+        # All-gather K/V to reconstruct full active KV (tiny: 256KB each)
+        if self.world_size > 1:
+            k = self.tp_group.all_gather(k_local.contiguous(), dim=1)
+            v = self.tp_group.all_gather(v_local.contiguous(), dim=1)
+        else:
+            k = k_local
+            v = v_local
+
+        # Metadata
         layer_name = f"layers.{self.layer_idx}.self_attn"
         slot_mapping = attn_metadata[layer_name]["slot_mapping"]
         block_size = attn_metadata[layer_name]["block_size"]
@@ -520,22 +538,19 @@ class Qwen3Attention(nn.Module):
                 raise ValueError(
                     "cached_seq_len is required when segmented prefill is enabled"
                 )
-            # Gather prior KV from cache BEFORE writing current chunk.
             bt = block_table[0].to(torch.int64).clamp_min(0)
             num_kv_heads = self.num_key_value_heads_per_rank
 
-            # Write current KV to cache (for next chunk's prior)
+            # Write FULL gathered KV to cache (all ranks write same data)
             self._write_paged_kv_cache(k, v, slot_mapping, block_size)
 
             prior_used_len = cached_seq_len.reshape(-1)[0:1]
 
-            # === Context Parallel: dual-call with prior KV split across TP ranks ===
-            # Call 1: Each rank handles a DISJOINT shard of prior tokens (non-causal)
-            # Call 2: All ranks handle the active tokens identically (causal)
-            # Then online softmax reduction combines all partial results.
-            total_blocks = bt.shape[0]  # static: 472 for this model
+            # === Local-Q Context Parallel ===
+            # Q is local (1024 tokens/rank), K/V active is full (4096 tokens).
+            # Prior KV is split across ranks (disjoint shards).
+            total_blocks = bt.shape[0]  # static: 472
             blocks_per_rank = total_blocks // self.world_size  # static: 118
-            rank = self.tp_group.rank_in_group
 
             if self.world_size > 1 and blocks_per_rank >= 1:
                 my_start = rank * blocks_per_rank
@@ -555,14 +570,11 @@ class Qwen3Attention(nn.Module):
                     num_kv_heads, local_prior_len, self.head_dim
                 )
 
-                # Call 1: Prior-only attention (non-causal, per-rank shard)
-                # All Q tokens attend to all K tokens in the prior shard.
-                # On early turns some blocks may be uninitialized; the reduction
-                # handles this gracefully (prior contribution is small relative to active).
+                # Call 1: Prior-only (non-causal, local Q × local prior shard)
                 prior_out, prior_neg_max, prior_sum = NF.flash_attention(
-                    q,                   # [8, 4096, 128]
-                    k_prior_local,       # [1, local_prior_len, 128] as active K
-                    v_prior_local,       # [1, local_prior_len, 128] as active V
+                    q,                   # [8, 1024, 128]
+                    k_prior_local,       # [1, local_prior_len, 128]
+                    v_prior_local,       # [1, local_prior_len, 128]
                     scale=self.scaling,
                     causal_mask=False,
                     tp_q=True,
@@ -572,9 +584,12 @@ class Qwen3Attention(nn.Module):
                     skip_output_normalization=True,
                 )
 
-                # Call 2: Active-only attention (causal, identical on all ranks)
+                # Call 2: Active-only (causal with cp_offset, local Q × full K)
+                cp_offset_val = torch.tensor(
+                    [[rank * local_tokens]], dtype=torch.int32, device=q.device
+                )
                 active_out, active_neg_max, active_sum = NF.flash_attention(
-                    q,    # [8, 4096, 128]
+                    q,    # [8, 1024, 128]
                     k,    # [1, 4096, 128]
                     v,    # [1, 4096, 128]
                     scale=self.scaling,
@@ -584,20 +599,16 @@ class Qwen3Attention(nn.Module):
                     tp_out=True,
                     cache_softmax=True,
                     skip_output_normalization=True,
+                    cp_offset=cp_offset_val,
+                    global_cp_deg=self.world_size,
                 )
 
-                # Combine prior results across ranks using all_reduce
-                # Since active is identical on all ranks, we only need to reduce priors.
-                # Strategy: reduce (prior + active) per rank, then subtract active overcounting.
-                # Simpler: all_gather prior stats (small), reduce locally, combine with active.
-
-                # All-gather prior results from all ranks
-                # prior_out: [8, 128, 4096], prior_neg_max/sum: [8, 128, 32]
+                # All-gather prior results (4× smaller than before: [8,128,1024])
                 all_prior_out = self.tp_group.all_gather(prior_out, dim=0)
                 all_prior_neg_max = self.tp_group.all_gather(prior_neg_max, dim=0)
                 all_prior_sum = self.tp_group.all_gather(prior_sum, dim=0)
 
-                # Online softmax reduction: combine all prior shards + active
+                # Online softmax reduction across prior shards
                 num_q_heads = self.num_attention_heads_per_rank  # 8
                 combined_out = all_prior_out[:num_q_heads]
                 combined_neg_max = all_prior_neg_max[:num_q_heads]
@@ -612,20 +623,20 @@ class Qwen3Attention(nn.Module):
                         chunk_out, chunk_neg_max, chunk_sum,
                     )
 
-                # Reduce with active attention (disjoint from prior)
+                # Reduce with active attention
                 combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
                     combined_out, combined_neg_max, combined_sum,
                     active_out, active_neg_max, active_sum,
                 )
 
-                # Final normalization: out / sum (clamp to avoid div-by-zero on turn 0)
+                # Final normalization
                 B_heads = combined_sum.shape[0]
                 sum_recip = 1.0 / torch.clamp(combined_sum, min=1e-10)
                 sum_recip_expanded = sum_recip.transpose(1, 2).reshape(B_heads, -1).unsqueeze(1)
                 attn_output = combined_out * sum_recip_expanded
 
             else:
-                # Fallback: original single-call path
+                # Fallback: single-call with prefix caching
                 k_blocks = torch.index_select(self.k_cache, 0, bt)
                 v_blocks = torch.index_select(self.v_cache, 0, bt)
                 padded_kv_len = bt.shape[0] * block_size
@@ -647,25 +658,25 @@ class Qwen3Attention(nn.Module):
                 )
         else:
             self._write_paged_kv_cache(k, v, slot_mapping, block_size)
-            k = k.repeat_interleave(self.num_key_value_groups, dim=0)
-            v = v.repeat_interleave(self.num_key_value_groups, dim=0)
+            k_full = k.repeat_interleave(self.num_key_value_groups, dim=0)
+            v_full = v.repeat_interleave(self.num_key_value_groups, dim=0)
             attn_output = NF.flash_attention(
                 q.transpose(1, 2),
-                k.transpose(1, 2),
-                v,
+                k_full.transpose(1, 2),
+                v_full,
                 scale=self.scaling,
                 tp_q=False,
                 tp_out=True,
             )
 
-        # Step 5: Output Projection
+        # Output Projection
         attn_output = attn_output.unsqueeze(0)
         attn_output = NF.o_proj(attn_output, self.o_proj_weight)
         attn_output = attn_output.squeeze(0)
 
-        # >>> PARALLELISM: Reduce-scatter to return to SP layout <<<
+        # >>> PARALLELISM: All-reduce O-proj partial sums (replaces reduce_scatter) <<<
         if self.world_size > 1:
-            attn_output = self.tp_group.reduce_scatter(attn_output, dim=0)
+            attn_output = self.tp_group.all_reduce(attn_output)
 
         return attn_output
 
