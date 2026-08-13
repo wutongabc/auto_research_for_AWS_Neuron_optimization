@@ -1,0 +1,13 @@
+{
+    "model_name": "gpt-oss-20b-full",
+    "base_url": "http://localhost:8100",
+    "tokenizer": "openai/gpt-oss-20b",
+    "tokens_per_turn": 3000,
+    "num_turns": 42,
+    "num_cores": 8,
+    "peak_tflops_per_core": 380.0,
+    "active_params_b": 5.0,
+    "baseline_logits_path": "benchmark/baseline_logits_oss20b_full.json",
+    "baseline_logits_save_path": "benchmark/baseline_logits_oss20b_full.json",
+    "results_output": "benchmark/results_oss20b_full_latest.json"
+}

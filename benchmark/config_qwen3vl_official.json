@@ -1,0 +1,13 @@
+{
+    "model_name": "qwen3-vl-32b-official",
+    "base_url": "http://localhost:8100",
+    "tokenizer": "Qwen/Qwen3-VL-32B-Instruct",
+    "tokens_per_turn": 3000,
+    "num_turns": 10,
+    "num_cores": 16,
+    "peak_tflops_per_core": 380.0,
+    "active_params_b": 32.0,
+    "baseline_logits_path": "benchmark/baseline_logits_qwen3vl_official.json",
+    "baseline_logits_save_path": "benchmark/baseline_logits_qwen3vl_official.json",
+    "results_output": "benchmark/results_qwen3vl_official_latest.json"
+}
