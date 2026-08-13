@@ -1,0 +1,13 @@
+model,config,variant,avg_prefill_tok_per_s,correctness_pct,notes
+gpt-oss-20b,official_tp8_16k,baseline,433.0,100.0,
+gpt-oss-20b,official_tp8_16k,optimized,24732.4,100.0,
+gpt-oss-20b,full_tp8_128k,baseline,FAIL,N/A,neuronx-cc compilation failed (graph too large)
+gpt-oss-20b,full_tp8_128k,optimized,13394.7,100.0,
+gpt-oss-120b,official_tp16_16k,baseline,OOM,N/A,HBM OOM: 28.62GB > 24GB limit per core
+gpt-oss-120b,official_tp16_16k,optimized,12976.6,100.0,
+gpt-oss-120b,full_tp16_128k,baseline,OOM,N/A,HBM OOM (same root cause)
+gpt-oss-120b,full_tp16_128k,optimized,13432.6,100.0,
+qwen3-vl-32b,official_tp16_32k,baseline,9840.2,100.0,
+qwen3-vl-32b,official_tp16_32k,optimized,27424.6,100.0,
+qwen3-vl-32b,full_tp8_128k,baseline,4439.3,100.0,
+qwen3-vl-32b,full_tp8_128k,optimized,10602.1,100.0,

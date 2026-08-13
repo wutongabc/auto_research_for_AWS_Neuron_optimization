@@ -1,0 +1,174 @@
+{
+  "summary": {
+    "avg_prefill_tok_per_s": 13432.6,
+    "avg_tok_per_s_all": 14440.1,
+    "mfu_percent": 1.3,
+    "correctness_pct": 100.0,
+    "total_turns": 21,
+    "scoring_turns": 11,
+    "compile_time_s": 0.0,
+    "peak_hbm_mb": 0.0
+  },
+  "per_turn": [
+    {
+      "turn": 1,
+      "new_tokens": 3000,
+      "total_context": 3000,
+      "prefill_time_ms": 182.60476199975528,
+      "tok_per_s": 16428.92533111497
+    },
+    {
+      "turn": 2,
+      "new_tokens": 3000,
+      "total_context": 6000,
+      "prefill_time_ms": 184.51554400053283,
+      "tok_per_s": 16258.792809300321
+    },
+    {
+      "turn": 3,
+      "new_tokens": 3000,
+      "total_context": 9000,
+      "prefill_time_ms": 186.22274300105346,
+      "tok_per_s": 16109.740151250104
+    },
+    {
+      "turn": 4,
+      "new_tokens": 3000,
+      "total_context": 12000,
+      "prefill_time_ms": 188.16782400062948,
+      "tok_per_s": 15943.214606074012
+    },
+    {
+      "turn": 5,
+      "new_tokens": 3000,
+      "total_context": 15000,
+      "prefill_time_ms": 189.7647510013485,
+      "tok_per_s": 15809.047698108496
+    },
+    {
+      "turn": 6,
+      "new_tokens": 3000,
+      "total_context": 18000,
+      "prefill_time_ms": 194.74611499936145,
+      "tok_per_s": 15404.671872452174
+    },
+    {
+      "turn": 7,
+      "new_tokens": 3000,
+      "total_context": 21000,
+      "prefill_time_ms": 197.89372499872115,
+      "tok_per_s": 15159.651979967464
+    },
+    {
+      "turn": 8,
+      "new_tokens": 3000,
+      "total_context": 24000,
+      "prefill_time_ms": 199.24325899955875,
+      "tok_per_s": 15056.971137009177
+    },
+    {
+      "turn": 9,
+      "new_tokens": 3000,
+      "total_context": 27000,
+      "prefill_time_ms": 201.48232900100993,
+      "tok_per_s": 14889.643249979319
+    },
+    {
+      "turn": 10,
+      "new_tokens": 3000,
+      "total_context": 30000,
+      "prefill_time_ms": 208.02538299903972,
+      "tok_per_s": 14421.317037132187
+    },
+    {
+      "turn": 11,
+      "new_tokens": 3000,
+      "total_context": 33000,
+      "prefill_time_ms": 210.66615100062336,
+      "tok_per_s": 14240.541186852191
+    },
+    {
+      "turn": 12,
+      "new_tokens": 3000,
+      "total_context": 36000,
+      "prefill_time_ms": 211.65458600080456,
+      "tok_per_s": 14174.037315631782
+    },
+    {
+      "turn": 13,
+      "new_tokens": 3000,
+      "total_context": 39000,
+      "prefill_time_ms": 211.14810099970782,
+      "tok_per_s": 14208.036850893352
+    },
+    {
+      "turn": 14,
+      "new_tokens": 3000,
+      "total_context": 42000,
+      "prefill_time_ms": 210.08018600150535,
+      "tok_per_s": 14280.261537746845
+    },
+    {
+      "turn": 15,
+      "new_tokens": 3000,
+      "total_context": 45000,
+      "prefill_time_ms": 223.5867290000897,
+      "tok_per_s": 13417.612098072228
+    },
+    {
+      "turn": 16,
+      "new_tokens": 3000,
+      "total_context": 48000,
+      "prefill_time_ms": 225.05158800049685,
+      "tok_per_s": 13330.276967400812
+    },
+    {
+      "turn": 17,
+      "new_tokens": 3000,
+      "total_context": 51000,
+      "prefill_time_ms": 230.10538200105657,
+      "tok_per_s": 13037.50470289402
+    },
+    {
+      "turn": 18,
+      "new_tokens": 3000,
+      "total_context": 54000,
+      "prefill_time_ms": 224.03299799952947,
+      "tok_per_s": 13390.884498212628
+    },
+    {
+      "turn": 19,
+      "new_tokens": 3000,
+      "total_context": 57000,
+      "prefill_time_ms": 240.74185200151987,
+      "tok_per_s": 12461.480939263773
+    },
+    {
+      "turn": 20,
+      "new_tokens": 3000,
+      "total_context": 60000,
+      "prefill_time_ms": 234.9731750000501,
+      "tok_per_s": 12767.41483362669
+    },
+    {
+      "turn": 21,
+      "new_tokens": 3000,
+      "total_context": 63000,
+      "prefill_time_ms": 240.94264500126883,
+      "tok_per_s": 12451.095985869175
+    }
+  ],
+  "config": {
+    "model_name": "gpt-oss-120b-full-optimized",
+    "base_url": "http://localhost:8100",
+    "tokenizer": "openai/gpt-oss-120b",
+    "tokens_per_turn": 3000,
+    "num_turns": 21,
+    "num_cores": 16,
+    "peak_tflops_per_core": 380.0,
+    "active_params_b": 30.0,
+    "baseline_logits_save_path": "benchmark/baseline_logits_oss120b_full.json",
+    "results_output": "benchmark/results_oss120b_full_optimized.json",
+    "baseline_logits_path": null
+  }
+}

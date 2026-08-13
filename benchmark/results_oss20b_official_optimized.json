@@ -1,0 +1,62 @@
+{
+  "summary": {
+    "avg_prefill_tok_per_s": 24732.4,
+    "avg_tok_per_s_all": 25115.4,
+    "mfu_percent": 4.9,
+    "correctness_pct": 100.0,
+    "total_turns": 5,
+    "scoring_turns": 3,
+    "compile_time_s": 0.0,
+    "peak_hbm_mb": 0.0
+  },
+  "per_turn": [
+    {
+      "turn": 1,
+      "new_tokens": 3000,
+      "total_context": 3000,
+      "prefill_time_ms": 116.09597599999688,
+      "tok_per_s": 25840.688914145314
+    },
+    {
+      "turn": 2,
+      "new_tokens": 3000,
+      "total_context": 6000,
+      "prefill_time_ms": 117.46693100030825,
+      "tok_per_s": 25539.102575107947
+    },
+    {
+      "turn": 3,
+      "new_tokens": 3000,
+      "total_context": 9000,
+      "prefill_time_ms": 118.119097998715,
+      "tok_per_s": 25398.094388027213
+    },
+    {
+      "turn": 4,
+      "new_tokens": 3000,
+      "total_context": 12000,
+      "prefill_time_ms": 121.84194299879891,
+      "tok_per_s": 24622.063028242854
+    },
+    {
+      "turn": 5,
+      "new_tokens": 3000,
+      "total_context": 15000,
+      "prefill_time_ms": 124.08467400018708,
+      "tok_per_s": 24177.03897900781
+    }
+  ],
+  "config": {
+    "model_name": "gpt-oss-20b-official-optimized",
+    "base_url": "http://localhost:8101",
+    "tokenizer": "openai/gpt-oss-20b",
+    "tokens_per_turn": 3000,
+    "num_turns": 5,
+    "num_cores": 8,
+    "peak_tflops_per_core": 380.0,
+    "active_params_b": 5.0,
+    "baseline_logits_save_path": "benchmark/baseline_logits_oss20b_official.json",
+    "results_output": "benchmark/results_oss20b_official_optimized.json",
+    "baseline_logits_path": null
+  }
+}
