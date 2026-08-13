@@ -54,6 +54,8 @@ from vllm_neuron.functional.attention.attention_decode import (
 )
 from vllm_neuron.functional.attention.attention_decode_mask import _resize_block_len
 from vllm_neuron.functional.moe.router import RouterComputationOrder
+from vllm.model_executor.models.interfaces import SupportsEagle3
+from vllm_neuron.vllm.spec_decode.decorator import async_speculative_decoding
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,40 @@ def _packed_fp8_viable_for_bucket(
     if block_len <= 0 or s_prior <= 0:
         return False
     return _resize_block_len(block_len, bs, q_head, s_active, s_prior) >= 2
+
+
+def _online_softmax_reduce(
+    out_a: torch.Tensor, neg_max_a: torch.Tensor, sum_a: torch.Tensor,
+    out_b: torch.Tensor, neg_max_b: torch.Tensor, sum_b: torch.Tensor,
+) -> tuple:
+    """Online softmax reduction for combining two unnormalized partial attention outputs.
+
+    All inputs are unnormalized: out = exp(scores - local_max) @ V, sum = sum(exp(scores - local_max)).
+    neg_max = -max(scores) (negated).
+
+    Shapes:
+      out: [B, D, S_q] with tp_out=True (D=head_dim=128, S_q=4096)
+      neg_max: [B, 128, num_grps] (128=partition_rows=tokens_per_group, num_grps=S_q/128)
+      sum: [B, 128, num_grps]
+
+    Returns combined (out, neg_max, sum) still unnormalized.
+    """
+    neg_max_new = torch.minimum(neg_max_a, neg_max_b)
+
+    corr_a = torch.exp(neg_max_new - neg_max_a)  # [B, 128, num_grps], in (0, 1]
+    corr_b = torch.exp(neg_max_new - neg_max_b)
+
+    sum_new = sum_a * corr_a + sum_b * corr_b
+
+    # Expand correction to output shape [B, D, S_q]
+    # corr: [B, 128, num_grps] → transpose(1,2) → [B, num_grps, 128] → reshape → [B, S_q]
+    # Then unsqueeze(1) → [B, 1, S_q] to broadcast with [B, D, S_q]
+    B = corr_a.shape[0]
+    corr_a_expanded = corr_a.transpose(1, 2).reshape(B, -1).unsqueeze(1)  # [B, 1, S_q]
+    corr_b_expanded = corr_b.transpose(1, 2).reshape(B, -1).unsqueeze(1)
+    out_new = out_a * corr_a_expanded + out_b * corr_b_expanded
+
+    return out_new, neg_max_new, sum_new
 
 
 # ============================================================================
@@ -183,11 +219,9 @@ class Qwen3RMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        input_dtype = hidden_states.dtype
-        hidden_states = hidden_states.to(torch.float32)
         variance = hidden_states.pow(2).mean(-1, keepdim=True)
         hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
-        return (self.weight * hidden_states).to(input_dtype)
+        return self.weight * hidden_states
 
 
 class Qwen3RotaryEmbedding(nn.Module):
@@ -319,6 +353,9 @@ class Qwen3Attention(nn.Module):
         self.k_scale_float = 1.0
         self.v_scale_float = 1.0
 
+        # CP offset for local-Q active attention (set after model load)
+        self._cp_offset = None
+
         self._setup_weight_loaders()
 
     def _setup_weight_loaders(self):
@@ -412,9 +449,7 @@ class Qwen3Attention(nn.Module):
                 attn_metadata,
             )
         else:
-            # >>> PARALLELISM: All-gather from SP before attention <<<
-            if self.world_size > 1:
-                hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
+            # >>> PARALLELISM: Local-Q path (no hidden all_gather) <<<
             return self.forward_prefill(
                 hidden_states,
                 positions,
@@ -431,18 +466,27 @@ class Qwen3Attention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attn_metadata: object | None = None,
     ) -> torch.Tensor:
-        """Prefill: QKV proj → QK norm → RoPE → flash attention → O proj."""
+        """Prefill: local-Q QKV proj → all_gather KV → CP attention → O proj → all_reduce."""
         if attn_metadata is None:
             return torch.zeros_like(hidden_states)
 
         hidden_states = hidden_states.to(self.dtype)
-        tokens, hidden = hidden_states.shape
+        local_tokens, hidden = hidden_states.shape
+        rank = self.tp_group.rank_in_group
 
-        # Step 1: Fused QKV Projection + QK RMSNorm + M-RoPE
+        # Slice position embeddings to local token range
         cos, sin = position_embeddings
-        cos_cache = cos.unsqueeze(0)
-        sin_cache = sin.unsqueeze(0)
+        if self.world_size > 1:
+            start = rank * local_tokens
+            cos_local = cos[start:start + local_tokens]
+            sin_local = sin[start:start + local_tokens]
+        else:
+            cos_local = cos
+            sin_local = sin
+        cos_cache = cos_local.unsqueeze(0)
+        sin_cache = sin_local.unsqueeze(0)
 
+        # QKV projection on LOCAL tokens only (4× less compute than full)
         qkv = NF.qkv_proj(
             hidden=hidden_states.unsqueeze(0),
             qkv_weights=self.qkv_proj_weight,
@@ -458,18 +502,26 @@ class Qwen3Attention(nn.Module):
             qk_norm_pre_rope_k_gamma=self.k_layernorm.weight.unsqueeze(0),
         ).squeeze(0)
 
-        q, k, v = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
+        q, k_local, v_local = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
         q = q.view(
-            tokens, self.num_attention_heads_per_rank, self.head_dim
+            local_tokens, self.num_attention_heads_per_rank, self.head_dim
         ).transpose(0, 1)
-        k = k.view(
-            tokens, self.num_key_value_heads_per_rank, self.head_dim
+        k_local = k_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
         ).transpose(0, 1)
-        v = v.view(
-            tokens, self.num_key_value_heads_per_rank, self.head_dim
+        v_local = v_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
         ).transpose(0, 1)
 
-        # Write K/V into paged cache (handles FP8 quantization + packed layout)
+        # All-gather K/V to reconstruct full active KV (tiny: 256KB each)
+        if self.world_size > 1:
+            k = self.tp_group.all_gather(k_local.contiguous(), dim=1)
+            v = self.tp_group.all_gather(v_local.contiguous(), dim=1)
+        else:
+            k = k_local
+            v = v_local
+
+        # Metadata
         layer_name = f"layers.{self.layer_idx}.self_attn"
         slot_mapping = attn_metadata[layer_name]["slot_mapping"]
         block_size = attn_metadata[layer_name]["block_size"]
@@ -481,48 +533,152 @@ class Qwen3Attention(nn.Module):
         if kv_segment_size:
             validate_fp8_segmented_supported(kv_is_fp8, self.fp8_packed, self.k_cache)
 
-        self._write_paged_kv_cache(k, v, slot_mapping, block_size)
-
         if kv_segment_size:
             if cached_seq_len is None:
                 raise ValueError(
                     "cached_seq_len is required when segmented prefill is enabled"
                 )
-            attn_output = NF.segmented_attention(
-                q,
-                k_cache=self.k_cache,
-                v_cache=self.v_cache,
-                block_tables=block_table,
-                prior_tokens=cached_seq_len,
-                block_size=block_size,
-                kv_segment_size=kv_segment_size,
-                scale=self.scaling,
-                tp_q=True,
-                tp_out=True,
-                fp8_packed=self.fp8_packed,
-            )
+            bt = block_table[0].to(torch.int64).clamp_min(0)
+            num_kv_heads = self.num_key_value_heads_per_rank
+
+            # Write FULL gathered KV to cache (all ranks write same data)
+            self._write_paged_kv_cache(k, v, slot_mapping, block_size)
+
+            prior_used_len = cached_seq_len.reshape(-1)[0:1]
+
+            # === Local-Q Context Parallel ===
+            # Q is local (1024 tokens/rank), K/V active is full (4096 tokens).
+            # Prior KV is split across ranks (disjoint shards).
+            total_blocks = bt.shape[0]  # static: 472
+            blocks_per_rank = total_blocks // self.world_size  # static: 118
+
+            if self.world_size > 1 and blocks_per_rank >= 1:
+                my_start = rank * blocks_per_rank
+                my_end = (rank + 1) * blocks_per_rank
+                if rank == self.world_size - 1:
+                    my_end = total_blocks
+
+                bt_local = bt[my_start:my_end]
+                k_blocks_local = torch.index_select(self.k_cache, 0, bt_local)
+                v_blocks_local = torch.index_select(self.v_cache, 0, bt_local)
+                local_num_blocks = my_end - my_start
+                local_prior_len = local_num_blocks * block_size
+                k_prior_local = k_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
+                v_prior_local = v_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
+
+                # Call 1: Prior-only (non-causal, local Q × local prior shard)
+                prior_out, prior_neg_max, prior_sum = NF.flash_attention(
+                    q,                   # [8, 1024, 128]
+                    k_prior_local,       # [1, local_prior_len, 128]
+                    v_prior_local,       # [1, local_prior_len, 128]
+                    scale=self.scaling,
+                    causal_mask=False,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                )
+
+                # Call 2: Active-only (causal with cp_offset, local Q × full K)
+                cp_offset_val = torch.tensor(
+                    [[rank * local_tokens]], dtype=torch.int32, device=q.device
+                )
+                active_out, active_neg_max, active_sum = NF.flash_attention(
+                    q,    # [8, 1024, 128]
+                    k,    # [1, 4096, 128]
+                    v,    # [1, 4096, 128]
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                    cp_offset=cp_offset_val,
+                    global_cp_deg=self.world_size,
+                )
+
+                # All-gather prior results (4× smaller than before: [8,128,1024])
+                all_prior_out = self.tp_group.all_gather(prior_out, dim=0)
+                all_prior_neg_max = self.tp_group.all_gather(prior_neg_max, dim=0)
+                all_prior_sum = self.tp_group.all_gather(prior_sum, dim=0)
+
+                # Online softmax reduction across prior shards
+                num_q_heads = self.num_attention_heads_per_rank  # 8
+                combined_out = all_prior_out[:num_q_heads]
+                combined_neg_max = all_prior_neg_max[:num_q_heads]
+                combined_sum = all_prior_sum[:num_q_heads]
+
+                for r in range(1, self.world_size):
+                    chunk_out = all_prior_out[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_neg_max = all_prior_neg_max[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_sum = all_prior_sum[r * num_q_heads:(r + 1) * num_q_heads]
+                    combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                        combined_out, combined_neg_max, combined_sum,
+                        chunk_out, chunk_neg_max, chunk_sum,
+                    )
+
+                # Reduce with active attention
+                combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                    combined_out, combined_neg_max, combined_sum,
+                    active_out, active_neg_max, active_sum,
+                )
+
+                # Final normalization
+                B_heads = combined_sum.shape[0]
+                sum_recip = 1.0 / torch.clamp(combined_sum, min=1e-10)
+                sum_recip_expanded = sum_recip.transpose(1, 2).reshape(B_heads, -1).unsqueeze(1)
+                attn_output = combined_out * sum_recip_expanded
+
+            else:
+                # Fallback: single-call with prefix caching
+                k_blocks = torch.index_select(self.k_cache, 0, bt)
+                v_blocks = torch.index_select(self.v_cache, 0, bt)
+                padded_kv_len = bt.shape[0] * block_size
+                k_prior = k_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+                v_prior = v_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+
+                attn_output = NF.flash_attention(
+                    q,
+                    k,
+                    v,
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    k_prior=k_prior,
+                    v_prior=v_prior,
+                    prior_used_len=prior_used_len,
+                )
         else:
-            k = k.repeat_interleave(self.num_key_value_groups, dim=0)
-            v = v.repeat_interleave(self.num_key_value_groups, dim=0)
+            self._write_paged_kv_cache(k, v, slot_mapping, block_size)
+            k_full = k.repeat_interleave(self.num_key_value_groups, dim=0)
+            v_full = v.repeat_interleave(self.num_key_value_groups, dim=0)
             attn_output = NF.flash_attention(
                 q.transpose(1, 2),
-                k.transpose(1, 2),
-                v,
+                k_full.transpose(1, 2),
+                v_full,
                 scale=self.scaling,
                 tp_q=False,
                 tp_out=True,
             )
 
-        # Step 5: Output Projection
+        # Output Projection
         attn_output = attn_output.unsqueeze(0)
         attn_output = NF.o_proj(attn_output, self.o_proj_weight)
         attn_output = attn_output.squeeze(0)
 
-        # >>> PARALLELISM: Reduce-scatter to return to SP layout <<<
+        # >>> PARALLELISM: All-reduce O-proj partial sums (replaces reduce_scatter) <<<
         if self.world_size > 1:
-            attn_output = self.tp_group.reduce_scatter(attn_output, dim=0)
+            attn_output = self.tp_group.all_reduce(attn_output)
 
-        return attn_output.contiguous()
+        return attn_output
 
     # ── Decode path ──────────────────────────────────────────────────────
 
@@ -764,7 +920,7 @@ class Qwen3MoeExperts(nn.Module):
         self.dtype = config.torch_dtype
         self.rms_norm_eps = config.rms_norm_eps
         self.norm_topk_prob = config.norm_topk_prob
-        self.block_size = 256
+        self.block_size = 128
 
         from vllm.config import get_current_vllm_config
 
@@ -992,37 +1148,35 @@ class Qwen3MoeExperts(nn.Module):
                 ),
             )
         else:
-            # Qwen3 applies softmax over every expert before selecting top-k.
-            # Unlike the normalized variant, the selected probabilities retain
-            # their mass relative to all experts instead of summing to one.
-            router_logits = F.linear(
-                hidden_states.to(torch.float32),
-                self.router_weight.to(torch.float32),
+            from vllm_neuron.functional.moe.router import _nki_router_impl
+            nki_affinities, router_logits = _nki_router_impl(
+                hidden_states=hidden_states,
+                router_weights=self.router_weight.T,
+                top_k=self.top_k,
+                router_bias=None,
+                activation="sigmoid",
+                computation_dtype=torch.float32,
+                router_computation_order=(
+                    RouterComputationOrder.PRENORM_LINEAR_TOPK_ACT_SCATTER
+                ),
+                skip_store_router_logits=False,
+                shard_on_tokens=True,
+                x_hbm_layout=1,
+                x_sb_layout=0,
+                use_column_tiling=False,
+                use_indirect_dma_scatter=False,
+                use_PE_broadcast_w_bias=False,
             )
             router_probs = F.softmax(router_logits, dim=-1)
-            router_top_probs, router_indices = torch.topk(
-                router_probs, self.top_k, dim=-1
-            )
-            expert_affinities = torch.zeros_like(router_probs).scatter(
-                1, router_indices, router_top_probs
-            )
-        if self.world_size > 1:
-            expert_affinities = self.tp_group.all_gather(expert_affinities, dim=0)
-            hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
+            expert_affinities = router_probs * (nki_affinities != 0)
 
+        # Process MoE on local tokens only (skip all_gather), use all_reduce
+        # for TP reduction. This reduces MoE kernel work by TP factor.
+        local_tokens = hidden_states.shape[0]
         last_real_idx = torch.argmax(positions)
-        token_indices = torch.arange(positions.shape[0], device=positions.device)
-        padding_mask = token_indices <= last_real_idx
-        if self.ep_enabled:
-            local_indices = torch.arange(
-                self.ep_rank * self.num_experts,
-                (self.ep_rank + 1) * self.num_experts,
-                device=hidden_states.device,
-                dtype=torch.int32,
-            )
-            expert_affinities = NF.get_local_expert_affinities(
-                expert_affinities, local_indices
-            )
+        local_start = self.tp_group.rank_in_group * local_tokens
+        local_indices = torch.arange(local_tokens, device=positions.device) + local_start
+        padding_mask = local_indices <= last_real_idx
 
         (
             expert_affinities_masked,
@@ -1035,33 +1189,28 @@ class Qwen3MoeExperts(nn.Module):
             num_experts_per_token=self.top_k,
             block_size=self.block_size,
             moe_group=self.ep_tp_group,
-            tp_degree=self.tp_degree,
+            tp_degree=1,
             padding_mask=padding_mask,
         )
-        if self.fp8_weights_enabled and self.fp8_only:
-            gate_up_w = self._dequant_gate_up_for_prefill()
-            down_w = self._dequant_down_for_prefill()
-        else:
-            gate_up_w = self.gate_up_proj_weight
-            down_w = self.down_proj_weight
         output = NF.moe_cte(
             implementation=MoECTEImplementation.shard_on_block,
             conditions=conditions,
             hidden_states=hidden_states,
             expert_affinities_masked=expert_affinities_masked,
-            gate_up_proj_weight=gate_up_w,
-            down_proj_weight=down_w,
+            gate_up_proj_weight=self.gate_up_proj_weight,
+            down_proj_weight=self.down_proj_weight,
             activation_function=ActFnType.SiLU,
             block_size=self.block_size,
             token_position_to_id=token_position_to_id.to(torch.int32),
             block_to_expert=block_to_expert.to(torch.int32),
             expert_affinities_scaling_mode=ExpertAffinityScaleMode.POST_SCALE,
             skip_token=True,
+            skip_weight=True,
             is_tensor_update_accumulating=True,
             compute_dtype=nl.bfloat16,
         )
         if self.world_size > 1:
-            output = self.tp_group.reduce_scatter(output, dim=0)
+            output = self.tp_group.all_reduce(output)
         return output
 
 
@@ -1194,6 +1343,8 @@ class Qwen3Model(nn.Module):
         # Final norm
         self.norm = Qwen3RMSNorm(config.hidden_size, config.rms_norm_eps, config.torch_dtype)
 
+        # Eagle3: layer indices whose hidden states are captured for the drafter
+        self.aux_hidden_state_layers = []
 
     def forward(
         self,
@@ -1203,7 +1354,7 @@ class Qwen3Model(nn.Module):
         rank: torch.Tensor | None = None,
         inputs_embeds: torch.Tensor | None = None,
         is_token_ids: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, list]:
         """Model forward: embedding -> layers -> norm."""
         first_layer_name = "layers.0.self_attn"
         max_query_len = attn_metadata[first_layer_name]["max_query_len"]
@@ -1236,8 +1387,11 @@ class Qwen3Model(nn.Module):
         # RoPE
         position_embeddings = self.rotary_emb(positions, device=hidden_states.device, dtype=hidden_states.dtype)
 
-        # Decoder layers
-        for layer in self.layers:
+        # Decoder layers with Eagle3 aux hidden state collection
+        aux_hidden_states = []
+        for idx, layer in enumerate(self.layers):
+            if idx in self.aux_hidden_state_layers:
+                aux_hidden_states.append(hidden_states)
             hidden_states = layer(
                 hidden_states,
                 positions,
@@ -1252,15 +1406,22 @@ class Qwen3Model(nn.Module):
         if is_prefill and self.world_size > 1:
             hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
 
-        return hidden_states
+        # Eagle3 drafter needs full-sequence aux states (not SP-partitioned)
+        if aux_hidden_states and is_prefill and self.world_size > 1:
+            aux_hidden_states = [
+                self.tp_group.all_gather(aux, dim=0) for aux in aux_hidden_states
+            ]
+
+        return hidden_states, aux_hidden_states
 
 
 # ============================================================================
 # CausalLM
 # ============================================================================
 
-class Qwen3ForCausalLM(nn.Module):
-    """Qwen3 language model head."""
+@async_speculative_decoding
+class Qwen3ForCausalLM(nn.Module, SupportsEagle3):
+    """Qwen3 language model head with EAGLE3 speculative decoding support."""
 
     def __init__(self, config: Qwen3Config):
         super().__init__()
@@ -1317,6 +1478,7 @@ class Qwen3ForCausalLM(nn.Module):
         attn_metadata: dict | None = None,
         sampling_positions: torch.Tensor | None = None,
         sampling_params: torch.Tensor | None = None,
+        spec_decode_metadata=None,
         logit_mask: torch.Tensor | None = None,
         rank: torch.Tensor | None = None,
         **kwargs,
@@ -1325,7 +1487,7 @@ class Qwen3ForCausalLM(nn.Module):
         positions = positions.to(torch.int32)
 
         # Model forward
-        hidden_states = self.model(
+        hidden_states, aux_hidden_states = self.model(
             input_ids,
             positions,
             attn_metadata,
@@ -1348,6 +1510,9 @@ class Qwen3ForCausalLM(nn.Module):
 
         # CPU sampling path (no on-device sampler)
         if self.sampler is None:
+            if len(aux_hidden_states) > 0:
+                aux_hidden_states_concat = torch.cat(aux_hidden_states, dim=-1)
+                return logits, aux_hidden_states_concat
             return logits
 
         # Standard on-device sampling
@@ -1355,7 +1520,57 @@ class Qwen3ForCausalLM(nn.Module):
             logits, sampling_params, logit_mask=logit_mask, tp_rank=rank
         )
 
+        # Speculative decoding: rejection sampling
+        if spec_decode_metadata is not None:
+            from vllm_neuron.nn.rejection_sampler import rejection_sampler
+
+            rejection_sampled_tokens = rejection_sampler(
+                spec_decode_metadata,
+                sampled_tokens,
+            )
+            if len(aux_hidden_states) > 0:
+                aux_hidden_states_concat = torch.cat(aux_hidden_states, dim=-1)
+                return (
+                    rejection_sampled_tokens,
+                    aux_hidden_states_concat,
+                    gathered_logits,
+                )
+            return rejection_sampled_tokens
+
+        # Standard return (with optional Eagle3 aux states)
+        if len(aux_hidden_states) > 0:
+            aux_hidden_states_concat = torch.cat(aux_hidden_states, dim=-1)
+            return sampled_tokens, aux_hidden_states_concat, gathered_logits
         return sampled_tokens, gathered_logits
+
+    # ── Eagle3 interface ─────────────────────────────────────────────────
+
+    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
+        if layers is not None:
+            self.model.aux_hidden_state_layers = list(layers)
+
+    def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
+        if self.model.aux_hidden_state_layers:
+            return tuple(self.model.aux_hidden_state_layers)
+        num_layers = len(self.model.layers)
+        return (2, num_layers // 2, num_layers - 3)
+
+    def compute_logits(
+        self,
+        hidden_states: torch.Tensor,
+        sampling_metadata: object | None = None,
+    ) -> torch.Tensor:
+        """Compute logits from hidden states."""
+        logits = torch.matmul(hidden_states, self.lm_head.weight.t())
+        return logits
+
+    def sample(
+        self,
+        logits: torch.Tensor,
+        sampling_metadata: object | None = None,
+    ) -> torch.Tensor:
+        """Sample next tokens."""
+        return self.sampler(logits, sampling_metadata)
 
     def get_kv_spec(self):
         """Return KV cache specification."""
