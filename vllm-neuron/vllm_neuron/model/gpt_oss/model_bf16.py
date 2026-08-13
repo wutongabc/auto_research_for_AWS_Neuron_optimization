@@ -106,6 +106,22 @@ def _packed_fp8_viable_for_bucket(
     return _resize_block_len(block_len, bs, q_head, s_active, s_prior) >= 2
 
 
+def _online_softmax_reduce(
+    out_a: torch.Tensor, neg_max_a: torch.Tensor, sum_a: torch.Tensor,
+    out_b: torch.Tensor, neg_max_b: torch.Tensor, sum_b: torch.Tensor,
+) -> tuple:
+    """Online softmax reduction for combining two unnormalized partial attention outputs."""
+    neg_max_new = torch.minimum(neg_max_a, neg_max_b)
+    corr_a = torch.exp(neg_max_new - neg_max_a)
+    corr_b = torch.exp(neg_max_new - neg_max_b)
+    sum_new = sum_a * corr_a + sum_b * corr_b
+    B = corr_a.shape[0]
+    corr_a_expanded = corr_a.transpose(1, 2).reshape(B, -1).unsqueeze(1)
+    corr_b_expanded = corr_b.transpose(1, 2).reshape(B, -1).unsqueeze(1)
+    out_new = out_a * corr_a_expanded + out_b * corr_b_expanded
+    return out_new, neg_max_new, sum_new
+
+
 # =============================================================================
 # Section 1: RMS Normalization
 # <-- MODEL-SPECIFIC: GPT-OSS uses RMSNorm with variance on unpadded portion
@@ -532,10 +548,7 @@ class GptOssAttention(nn.Module):
                 attn_metadata,
             )
         else:
-            # >>> PARALLELISM: All-gather from SP before attention <<<
-            if self.world_size > 1:
-                hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
-
+            # >>> PARALLELISM: Local-Q path (no hidden all_gather) <<<
             return self.forward_prefill(
                 hidden_states,
                 positions,
@@ -598,34 +611,58 @@ class GptOssAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attn_metadata: object | None = None,
     ) -> torch.Tensor:
-        """Prefill: full-sequence attention with flash attention.
-
-        Pipeline:
-        1. QKV projection          >>> PARALLELISM: TP sharded heads <<<
-        2. RoPE                    <-- MODEL-SPECIFIC: YaRN RoPE
-        3. KV cache update         >>> PARALLELISM: per-rank cache <<<
-        4. Flash attention          <-- MODEL-SPECIFIC: sinks + sliding window
-        5. Output projection       >>> PARALLELISM: reduce-scatter after O proj <<<
-        """
+        """Prefill: local-Q QKV proj → all_gather KV → CP attention → O proj → all_reduce."""
         if attn_metadata is None:
             return torch.zeros_like(hidden_states)
 
         hidden_states = hidden_states.to(self.dtype)
-        tokens, hidden = hidden_states.shape
+        local_tokens, hidden = hidden_states.shape
+        rank = self.tp_group.rank_in_group
 
-        # ── Step 1: QKV Projection (with fused RoPE) ─────────────────────
-        # <-- MODEL-SPECIFIC: YaRN/NTK RoPE — fused into the qkv_proj kernel.
-        # GptOssRotaryEmbedding emits cos/sin of shape [T, d_head/2]; the
-        # kernel expects [B, T, d_head] for split-in-half RoPE. cat-double
-        # makes the second half match the first so the kernel's per-half
-        # math is equivalent to gpt-oss's non-interleaved RoPE.
+        # Local-Q: QKV on local tokens only, then all_gather KV
         cos, sin = position_embeddings
-        cos_cache = torch.cat([cos, cos], dim=-1).unsqueeze(0)
-        sin_cache = torch.cat([sin, sin], dim=-1).unsqueeze(0)
+        if self.world_size > 1:
+            start = rank * local_tokens
+            cos_local = cos[start:start + local_tokens]
+            sin_local = sin[start:start + local_tokens]
+        else:
+            cos_local = cos
+            sin_local = sin
+        cos_cache = torch.cat([cos_local, cos_local], dim=-1).unsqueeze(0)
+        sin_cache = torch.cat([sin_local, sin_local], dim=-1).unsqueeze(0)
 
-        # ── KV cache metadata (pulled up so segmented branch can fold the
-        # post-RoPE K/V cache write into the qkv kernel). ──
-        # >>> PARALLELISM: Cache is per-rank (TP sharded KV heads) <<<
+        # QKV projection on LOCAL tokens only
+        qkv = NF.qkv_proj(
+            hidden=hidden_states.unsqueeze(0),
+            qkv_weights=self.qkv_proj_weight,
+            bias=self.qkv_proj_bias.unsqueeze(0) if self.qkv_proj_bias is not None else None,
+            d_head=self.head_dim,
+            cos_cache=cos_cache,
+            sin_cache=sin_cache,
+            num_q_heads=self.num_attention_heads_per_rank,
+            num_kv_heads=self.num_kv_heads_for_weight,
+        ).squeeze(0)
+
+        q, k_local, v_local = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
+        q = q.view(
+            local_tokens, self.num_attention_heads_per_rank, self.head_dim
+        ).transpose(0, 1)
+        k_local = k_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
+        ).transpose(0, 1)
+        v_local = v_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
+        ).transpose(0, 1)
+
+        # All-gather K/V to reconstruct full active KV
+        if self.world_size > 1:
+            k = self.tp_group.all_gather(k_local.contiguous(), dim=1)
+            v = self.tp_group.all_gather(v_local.contiguous(), dim=1)
+        else:
+            k = k_local
+            v = v_local
+
+        # Metadata
         layer_name = f"layers.{self.layer_idx}.self_attn"
         slot_mapping = attn_metadata[layer_name]["slot_mapping"]
         block_size = attn_metadata[layer_name]["block_size"]
@@ -634,158 +671,164 @@ class GptOssAttention(nn.Module):
         kv_segment_size = attn_metadata[layer_name].get("kv_segment_size")
 
         kv_is_fp8 = self.k_cache.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]
-
-        # ── Step 3+4: KV cache write + Attention ──────────────────────────
-        # <-- MODEL-SPECIFIC: sinks, sliding window
         if kv_segment_size:
-            # attention_segmented_cte cannot read a non-packed FP8 K cache;
-            # fail fast on the unsupported combo (see helper for rationale).
             validate_fp8_segmented_supported(kv_is_fp8, self.fp8_packed, self.k_cache)
 
-            # bf16 (non-packed): fold the post-RoPE K/V cache write into the qkv
-            # kernel (in-kernel write: must_alias output → FX aliasing pass
-            # threads back to self.k_cache / self.v_cache for the downstream
-            # segmented_attention). The qkv kernel cannot emit the swizzled
-            # packed-FP8 K layout, so packed FP8 falls back to a plain projection
-            # + explicit (un)swizzled scatter.
-            if not self.fp8_packed:
-                # Sanitize slot_mapping for the in-kernel scatter: the qkv NKI
-                # kernel uses slot_mapping values as direct DMA offsets into the
-                # cache, with no oob_mode.skip on this path — out-of-range slots
-                # cause a hardware OOB. Remap sentinels (< 0) and stale values
-                # (>= num_blocks * block_size) to slot 0; the K/V they would
-                # have written are unused (padding tokens never read), so the
-                # harmless write is acceptable. Mirrors PR #2306's decode path.
-                num_blocks_total = self.k_cache.shape[0]
-                max_slot = num_blocks_total * block_size
-                slot_mapping_clamped = torch.where(
-                    (slot_mapping < 0) | (slot_mapping >= max_slot),
-                    torch.zeros_like(slot_mapping),
-                    slot_mapping,
-                ).to(torch.int32)
-
-                # In-kernel write is bf16-only (guarded above): FP8 segmented
-                # must be packed, which takes the explicit-scatter branch below.
-                q_hbm, _, _ = NF.qkv_proj(
-                    hidden=hidden_states.unsqueeze(0),
-                    qkv_weights=self.qkv_proj_weight,
-                    bias=self.qkv_proj_bias.unsqueeze(0) if self.qkv_proj_bias is not None else None,
-                    d_head=self.head_dim,
-                    cos_cache=cos_cache,
-                    sin_cache=sin_cache,
-                    num_q_heads=self.num_attention_heads_per_rank,
-                    num_kv_heads=self.num_kv_heads_for_weight,
-                    k_cache=self.k_cache,
-                    v_cache=self.v_cache,
-                    use_block_kv=True,
-                    block_size=block_size,
-                    slot_mapping=slot_mapping_clamped,
+        if kv_segment_size:
+            if cached_seq_len is None:
+                raise ValueError(
+                    "cached_seq_len is required when segmented prefill is enabled"
                 )
-                q = (
-                    q_hbm.squeeze(0)
-                    .view(tokens, self.num_attention_heads_per_rank, self.head_dim)
-                    .transpose(0, 1)
-                )
-            else:
-                # Packed FP8 K cache: the qkv kernel cannot write the swizzled
-                # layout, so project + RoPE without the in-kernel write, then
-                # scatter K/V explicitly (un-swizzle K, scatter, re-swizzle).
-                qkv = NF.qkv_proj(
-                    hidden=hidden_states.unsqueeze(0),
-                    qkv_weights=self.qkv_proj_weight,
-                    bias=self.qkv_proj_bias.unsqueeze(0) if self.qkv_proj_bias is not None else None,
-                    d_head=self.head_dim,
-                    cos_cache=cos_cache,
-                    sin_cache=sin_cache,
-                    num_q_heads=self.num_attention_heads_per_rank,
-                    num_kv_heads=self.num_kv_heads_for_weight,
-                ).squeeze(0)
-                q, k, v = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
-                q = q.view(
-                    tokens, self.num_attention_heads_per_rank, self.head_dim
-                ).transpose(0, 1)
-                k = k.view(
-                    tokens, self.num_key_value_heads_per_rank, self.head_dim
-                ).transpose(0, 1)
-                v = v.view(
-                    tokens, self.num_key_value_heads_per_rank, self.head_dim
-                ).transpose(0, 1)
-                self._write_paged_kv_cache(k, v, slot_mapping, block_size)
+            bt = block_table[0].to(torch.int64).clamp_min(0)
+            num_kv_heads = self.num_key_value_heads_per_rank
 
-            attn_output = NF.segmented_attention(
-                q,
-                k_cache=self.k_cache,
-                v_cache=self.v_cache,
-                block_tables=block_table,
-                prior_tokens=cached_seq_len,
-                block_size=block_size,
-                kv_segment_size=kv_segment_size,
-                scale=self.scaling,
-                sliding_window=self.sliding_window,
-                sink=self.sinks.unsqueeze(1),
-                tp_q=True,
-                tp_out=True,
-                fp8_packed=self.fp8_packed,
-            )  # [Nh, Dh, T]
-        else:
-            # Full prefill: kernel returns concatenated QKV; cache is written
-            # via index_put_ since flash_attention needs raw K/V tensors.
-            qkv = NF.qkv_proj(
-                hidden=hidden_states.unsqueeze(0),
-                qkv_weights=self.qkv_proj_weight,
-                bias=self.qkv_proj_bias.unsqueeze(0) if self.qkv_proj_bias is not None else None,
-                d_head=self.head_dim,
-                cos_cache=cos_cache,
-                sin_cache=sin_cache,
-                num_q_heads=self.num_attention_heads_per_rank,
-                num_kv_heads=self.num_kv_heads_for_weight,
-            ).squeeze(0)
-
-            q, k, v = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
-            q = q.view(
-                tokens, self.num_attention_heads_per_rank, self.head_dim
-            ).transpose(0, 1)
-            k = k.view(
-                tokens, self.num_key_value_heads_per_rank, self.head_dim
-            ).transpose(0, 1)
-            v = v.view(
-                tokens, self.num_key_value_heads_per_rank, self.head_dim
-            ).transpose(0, 1)
-
-            # KV cache update via index_put_ (flash_attention needs raw K/V).
+            # Write FULL gathered KV to cache
             self._write_paged_kv_cache(k, v, slot_mapping, block_size)
 
-            # Full prefill: standard flash attention
-            k = k.repeat_interleave(self.num_key_value_groups, dim=0)
-            v = v.repeat_interleave(self.num_key_value_groups, dim=0)
+            prior_used_len = cached_seq_len.reshape(-1)[0:1]
 
-            q_flash = q.transpose(1, 2)  # [Nh, Dh, T]
-            k_flash = k.transpose(1, 2)  # [Nh, Dh, T]
-            v_flash = v  # [Nh, T, Dh]
+            # === Local-Q Context Parallel ===
+            total_blocks = bt.shape[0]
+            blocks_per_rank = total_blocks // self.world_size
 
+            if self.world_size > 1 and blocks_per_rank >= 1:
+                my_start = rank * blocks_per_rank
+                my_end = (rank + 1) * blocks_per_rank
+                if rank == self.world_size - 1:
+                    my_end = total_blocks
+
+                bt_local = bt[my_start:my_end]
+                k_blocks_local = torch.index_select(self.k_cache, 0, bt_local)
+                v_blocks_local = torch.index_select(self.v_cache, 0, bt_local)
+                local_num_blocks = my_end - my_start
+                local_prior_len = local_num_blocks * block_size
+                k_prior_local = k_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
+                v_prior_local = v_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
+
+                # Call 1: Prior-only (non-causal, local Q × local prior shard)
+                prior_out, prior_neg_max, prior_sum = NF.flash_attention(
+                    q,
+                    k_prior_local,
+                    v_prior_local,
+                    scale=self.scaling,
+                    causal_mask=False,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                    sink=self.sinks.unsqueeze(1),
+                )
+
+                # Call 2: Active-only (causal with cp_offset, local Q × full K)
+                cp_offset_val = torch.tensor(
+                    [[rank * local_tokens]], dtype=torch.int32, device=q.device
+                )
+                active_out, active_neg_max, active_sum = NF.flash_attention(
+                    q,
+                    k,
+                    v,
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                    cp_offset=cp_offset_val,
+                    global_cp_deg=self.world_size,
+                    sliding_window=self.sliding_window,
+                    sink=self.sinks.unsqueeze(1),
+                )
+
+                # All-gather prior results
+                all_prior_out = self.tp_group.all_gather(prior_out, dim=0)
+                all_prior_neg_max = self.tp_group.all_gather(prior_neg_max, dim=0)
+                all_prior_sum = self.tp_group.all_gather(prior_sum, dim=0)
+
+                # Online softmax reduction across prior shards
+                num_q_heads = self.num_attention_heads_per_rank
+                combined_out = all_prior_out[:num_q_heads]
+                combined_neg_max = all_prior_neg_max[:num_q_heads]
+                combined_sum = all_prior_sum[:num_q_heads]
+
+                for r in range(1, self.world_size):
+                    chunk_out = all_prior_out[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_neg_max = all_prior_neg_max[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_sum = all_prior_sum[r * num_q_heads:(r + 1) * num_q_heads]
+                    combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                        combined_out, combined_neg_max, combined_sum,
+                        chunk_out, chunk_neg_max, chunk_sum,
+                    )
+
+                # Reduce with active attention
+                combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                    combined_out, combined_neg_max, combined_sum,
+                    active_out, active_neg_max, active_sum,
+                )
+
+                # Final normalization
+                B_heads = combined_sum.shape[0]
+                sum_recip = 1.0 / torch.clamp(combined_sum, min=1e-10)
+                sum_recip_expanded = sum_recip.transpose(1, 2).reshape(B_heads, -1).unsqueeze(1)
+                attn_output = combined_out * sum_recip_expanded
+
+            else:
+                # Fallback: single-call with prefix caching
+                k_blocks = torch.index_select(self.k_cache, 0, bt)
+                v_blocks = torch.index_select(self.v_cache, 0, bt)
+                padded_kv_len = bt.shape[0] * block_size
+                k_prior = k_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+                v_prior = v_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+
+                attn_output = NF.flash_attention(
+                    q,
+                    k,
+                    v,
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    k_prior=k_prior,
+                    v_prior=v_prior,
+                    prior_used_len=prior_used_len,
+                    sliding_window=self.sliding_window,
+                    sink=self.sinks.unsqueeze(1),
+                )
+        else:
+            # Full prefill without segmented attention
+            self._write_paged_kv_cache(k, v, slot_mapping, block_size)
+            k_full = k.repeat_interleave(self.num_key_value_groups, dim=0)
+            v_full = v.repeat_interleave(self.num_key_value_groups, dim=0)
             attn_output = NF.flash_attention(
-                q_flash,
-                k_flash,
-                v_flash,
+                q.transpose(1, 2),
+                k_full.transpose(1, 2),
+                v_full,
                 scale=self.scaling,
                 sliding_window=self.sliding_window,
                 sink=self.sinks.unsqueeze(1),
                 tp_q=False,
                 tp_out=True,
-            )  # [Nh, Dh, T]
+            )
 
-        # ── Step 5: Output Projection ────────────────────────────────────
-        attn_output = attn_output.unsqueeze(0)  # [1, Nh, Dh, T]
+        # Output Projection
+        attn_output = attn_output.unsqueeze(0)
         attn_output = NF.o_proj(
-            attn_output, self.o_proj_weight, self.o_proj_bias.unsqueeze(0)
-        )  # [1, T, H]
-        attn_output = attn_output.squeeze(0)  # [T, H]
+            attn_output, self.o_proj_weight,
+            self.o_proj_bias.unsqueeze(0) if self.o_proj_bias is not None else None,
+        )
+        attn_output = attn_output.squeeze(0)
 
-        # >>> PARALLELISM: Reduce-scatter to return to SP layout <<<
+        # All-reduce O-proj partial sums (replaces reduce_scatter in Local-Q)
         if self.world_size > 1:
-            attn_output = self.tp_group.reduce_scatter(attn_output, dim=0)
+            attn_output = self.tp_group.all_reduce(attn_output)
 
-        return attn_output.contiguous()
+        return attn_output
 
     # ── Decode path ──────────────────────────────────────────────────────
 
@@ -1293,47 +1336,42 @@ class GptOssExperts(nn.Module):
         positions: torch.Tensor,
         rank: torch.Tensor,
     ):
-        """Prefill: blockwise MoE with CTE kernel.
+        """Prefill: Local-MoE — process local tokens only, all_reduce output.
 
-        >>> PARALLELISM: All-gather from SP → MoE → reduce-scatter back to SP <<<
-        <-- MODEL-SPECIFIC: Softmax routing, SwiGLU activation, clamping
+        Skips the expensive all_gather of hidden_states. Router and MoE kernel
+        operate on T_local tokens (T/world_size), then all_reduce combines
+        partial results across ranks.
         """
-        # <-- MODEL-SPECIFIC: Pre-MLP RMSNorm
+        # Pre-MLP RMSNorm
         hidden_states = self.post_attention_layernorm(hidden_states)
 
-        # Router: [T/world_size, H] → [T/world_size, E_total]
+        # Router on local tokens: [T_local, H] → [T_local, E_total]
         expert_affinities = NF.router(
             hidden_states=hidden_states,
             router_weights=self.router_weight.T,
             top_k=self.num_experts_per_token,
             router_bias=self.router_bias,
-            # <-- MODEL-SPECIFIC: Softmax routing
             activation="softmax",
             computation_dtype=torch.float32,
         )
 
-        # >>> PARALLELISM: All-gather from SP for full sequence (within TP group) <<<
-        if self.tp_group.world_size > 1:
-            expert_affinities = self.tp_group.all_gather(expert_affinities, dim=0)
-            hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
-
-        # Compute padding mask from positions (True = real token, False = padding).
-        # Must be computed before cross-DP gather since positions from different
-        # DP replicas are not monotonically increasing when concatenated.
+        # Local-MoE: process local tokens only (skip all_gather)
+        local_tokens = hidden_states.shape[0]
         padding_mask = None
         if positions is not None:
             last_real_idx = torch.argmax(positions)
-            token_indices = torch.arange(positions.shape[0], device=positions.device)
-            padding_mask = token_indices <= last_real_idx
+            local_start = self.tp_group.rank_in_group * local_tokens
+            local_indices = torch.arange(local_tokens, device=positions.device) + local_start
+            padding_mask = local_indices <= last_real_idx
 
-        # >>> PARALLELISM: Cross-DP EP gather — collect tokens from all DP replicas <<<
+        # Cross-DP EP gather if needed
         if self.cross_dp_ep:
             expert_affinities = self.dp_group.all_gather(expert_affinities, dim=0)
             hidden_states = self.dp_group.all_gather(hidden_states, dim=0)
             if padding_mask is not None:
                 padding_mask = self.dp_group.all_gather(padding_mask, dim=0)
 
-        # >>> PARALLELISM: With EP, map global affinities to local experts <<<
+        # EP: map global affinities to local experts
         if self.ep_degree > 1:
             local_expert_indices = torch.arange(
                 self.ep_rank * self.num_local_experts,
@@ -1345,11 +1383,7 @@ class GptOssExperts(nn.Module):
                 expert_affinities, local_expert_indices
             )
 
-        # Build blockwise mapping for efficient MoE dispatch
-        # >>> PARALLELISM: ep_tp_group provides TP rank coordination within
-        # the EP partition. For pure TP this is the full tp_group; for pure EP
-        # it is a single-rank group (no sharding); for variable EP+TP it is
-        # the TP sub-group within the EP partition.
+        # Build blockwise mapping — tp_degree=1 since we're not gathering across TP
         (
             expert_affinities_masked,
             token_position_to_id,
@@ -1361,7 +1395,7 @@ class GptOssExperts(nn.Module):
             num_experts_per_token=self.num_experts_per_token,
             block_size=self.block_size,
             moe_group=self.ep_tp_group,
-            tp_degree=self.tp_degree,
+            tp_degree=1,
             padding_mask=padding_mask,
         )
 
@@ -1383,7 +1417,6 @@ class GptOssExperts(nn.Module):
                 self.intermediate_size_per_rank,
             ),
             down_proj_bias=self.down_proj_bias.unsqueeze(1),
-            # <-- MODEL-SPECIFIC: SwiGLU with clamping
             activation_function=ActFnType.Swish,
             block_size=self.block_size,
             token_position_to_id=token_position_to_id.to(dtype=torch.int32),
@@ -1398,25 +1431,16 @@ class GptOssExperts(nn.Module):
             compute_dtype=nl.bfloat16,
         )
 
-        # >>> PARALLELISM: Cross-DP EP all-reduce and slice <<<
+        # Local-MoE: all_reduce combines partial results (replaces reduce_scatter)
         if self.cross_dp_ep:
-            # All-reduce across entire world (all TP and DP ranks)
             output = self.wide_ep_group.all_reduce(output)
-            # Slice to keep only this DP replica's tokens
             dp_rank = self.dp_group.rank_in_group
             tokens_per_dp = output.shape[0] // self.dp_size
             start_idx = dp_rank * tokens_per_dp
             end_idx = start_idx + tokens_per_dp
             output = output[start_idx:end_idx]
-            # Slice to keep only this TP rank's SP chunk
-            tp_rank = self.moe_group.rank_in_group
-            tokens_per_tp = output.shape[0] // self.moe_group.world_size
-            start_idx = tp_rank * tokens_per_tp
-            end_idx = start_idx + tokens_per_tp
-            output = output[start_idx:end_idx]
-        # >>> PARALLELISM: Combine expert results and return to SP layout <<<
         elif self.moe_group.world_size > 1:
-            output = self.moe_group.reduce_scatter(output, dim=0)
+            output = self.moe_group.all_reduce(output)
 
         return output
 
