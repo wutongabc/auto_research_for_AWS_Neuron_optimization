@@ -55,6 +55,22 @@ from .utils.vision_preprocessing import (
 from .vision_encoder_bf16 import Qwen3VLVisionModel
 
 
+def _online_softmax_reduce(
+    out_a: torch.Tensor, neg_max_a: torch.Tensor, sum_a: torch.Tensor,
+    out_b: torch.Tensor, neg_max_b: torch.Tensor, sum_b: torch.Tensor,
+) -> tuple:
+    """Online softmax reduction for combining two unnormalized partial attention outputs."""
+    neg_max_new = torch.minimum(neg_max_a, neg_max_b)
+    corr_a = torch.exp(neg_max_new - neg_max_a)
+    corr_b = torch.exp(neg_max_new - neg_max_b)
+    sum_new = sum_a * corr_a + sum_b * corr_b
+    B = corr_a.shape[0]
+    corr_a_expanded = corr_a.transpose(1, 2).reshape(B, -1).unsqueeze(1)
+    corr_b_expanded = corr_b.transpose(1, 2).reshape(B, -1).unsqueeze(1)
+    out_new = out_a * corr_a_expanded + out_b * corr_b_expanded
+    return out_new, neg_max_new, sum_new
+
+
 # ---------------------------------------------------------------------------
 # Section 1: RMSNorm
 # ---------------------------------------------------------------------------
@@ -368,9 +384,7 @@ class Qwen3VLTextAttention(nn.Module):
                 attn_metadata,
             )
         else:
-            # >>> PARALLELISM: All-gather from SP before attention <<<
-            if self.world_size > 1:
-                hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
+            # >>> PARALLELISM: Local-Q path (no hidden all_gather) <<<
             return self.forward_prefill(
                 hidden_states,
                 positions,
@@ -380,6 +394,19 @@ class Qwen3VLTextAttention(nn.Module):
 
     # ── Prefill path ─────────────────────────────────────────────────────
 
+    def _write_paged_kv_cache(self, k, v, slot_mapping, block_size):
+        """Scatter K/V into the paged cache."""
+        nkh = self.num_key_value_heads_per_rank
+        k_flat = k.reshape(-1, self.head_dim).to(self.k_cache.dtype)
+        v_flat = v.reshape(-1, self.head_dim).to(self.v_cache.dtype)
+        block_indices = (slot_mapping // block_size).repeat(nkh)
+        position_indices = (slot_mapping % block_size).repeat(nkh)
+        head_indices = torch.arange(
+            nkh, dtype=torch.long, device=k.device
+        ).repeat_interleave(slot_mapping.shape[0])
+        self.k_cache.index_put_((block_indices, head_indices, position_indices), k_flat)
+        self.v_cache.index_put_((block_indices, head_indices, position_indices), v_flat)
+
     def forward_prefill(
         self,
         hidden_states: torch.Tensor,
@@ -387,18 +414,27 @@ class Qwen3VLTextAttention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attn_metadata: object | None = None,
     ) -> torch.Tensor:
-        """Prefill: QKV proj → QK norm → RoPE → flash attention → O proj."""
+        """Prefill: local-Q QKV proj → all_gather KV → CP attention → O proj → all_reduce."""
         if attn_metadata is None:
             return torch.zeros_like(hidden_states)
 
         hidden_states = hidden_states.to(self.dtype)
-        tokens, hidden = hidden_states.shape
+        local_tokens, hidden = hidden_states.shape
+        rank = self.tp_group.rank_in_group
 
-        # Step 1: Fused QKV Projection + QK RMSNorm + M-RoPE
+        # Local-Q: slice position embeddings to local range
         cos, sin = position_embeddings
-        cos_cache = torch.cat((cos, cos), dim=-1).unsqueeze(0)
-        sin_cache = torch.cat((sin, sin), dim=-1).unsqueeze(0)
+        if self.world_size > 1:
+            start = rank * local_tokens
+            cos_local = cos[start:start + local_tokens]
+            sin_local = sin[start:start + local_tokens]
+        else:
+            cos_local = cos
+            sin_local = sin
+        cos_cache = torch.cat((cos_local, cos_local), dim=-1).unsqueeze(0)
+        sin_cache = torch.cat((sin_local, sin_local), dim=-1).unsqueeze(0)
 
+        # QKV projection on LOCAL tokens only
         qkv = NF.qkv_proj(
             hidden=hidden_states.unsqueeze(0),
             qkv_weights=self.qkv_proj_weight,
@@ -414,75 +450,173 @@ class Qwen3VLTextAttention(nn.Module):
             qk_norm_pre_rope_k_gamma=self.k_layernorm.weight.unsqueeze(0),
         ).squeeze(0)
 
-        q, k, v = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
+        q, k_local, v_local = torch.tensor_split(qkv, self.qkv_split_indices, dim=-1)
+        q = q.view(
+            local_tokens, self.num_attention_heads_per_rank, self.head_dim
+        ).transpose(0, 1)
+        k_local = k_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
+        ).transpose(0, 1)
+        v_local = v_local.view(
+            local_tokens, self.num_key_value_heads_per_rank, self.head_dim
+        ).transpose(0, 1)
 
-        q = q.view(tokens, self.num_attention_heads_per_rank, self.head_dim).transpose(
-            0, 1
-        )
-        k = k.view(tokens, self.num_key_value_heads_per_rank, self.head_dim).transpose(
-            0, 1
-        )
-        v = v.view(tokens, self.num_key_value_heads_per_rank, self.head_dim).transpose(
-            0, 1
-        )
+        # All-gather K/V to reconstruct full active KV
+        if self.world_size > 1:
+            k = self.tp_group.all_gather(k_local.contiguous(), dim=1)
+            v = self.tp_group.all_gather(v_local.contiguous(), dim=1)
+        else:
+            k = k_local
+            v = v_local
 
-        # Step 2: Update KV Cache
+        # Metadata
         layer_name = f"layers.{self.layer_idx}.self_attn"
         slot_mapping = attn_metadata[layer_name]["slot_mapping"]
         block_size = attn_metadata[layer_name]["block_size"]
+        block_table = attn_metadata[layer_name].get("block_table_tensor")
+        cached_seq_len = attn_metadata[layer_name].get("cached_seq_len")
+        kv_segment_size = attn_metadata[layer_name].get("kv_segment_size")
 
-        block_indices = slot_mapping // block_size
-        position_indices = slot_mapping % block_size
+        if kv_segment_size and block_table is not None:
+            # Segmented prefill with Context Parallel
+            bt = block_table[0].to(torch.int64).clamp_min(0)
+            num_kv_heads = self.num_key_value_heads_per_rank
 
-        k_flat = k.reshape(-1, self.head_dim)
-        v_flat = v.reshape(-1, self.head_dim)
+            self._write_paged_kv_cache(k, v, slot_mapping, block_size)
 
-        head_indices_for_put = torch.arange(
-            self.num_key_value_heads_per_rank,
-            dtype=torch.long,
-            device=hidden_states.device,
-        ).repeat_interleave(slot_mapping.shape[0])
-        block_indices_for_put = block_indices.repeat(self.num_key_value_heads_per_rank)
-        position_indices_for_put = position_indices.repeat(
-            self.num_key_value_heads_per_rank
-        )
+            total_blocks = bt.shape[0]
+            blocks_per_rank = total_blocks // self.world_size
 
-        self.k_cache.index_put_(
-            (block_indices_for_put, head_indices_for_put, position_indices_for_put),
-            k_flat,
-        )
-        self.v_cache.index_put_(
-            (block_indices_for_put, head_indices_for_put, position_indices_for_put),
-            v_flat,
-        )
+            if self.world_size > 1 and blocks_per_rank >= 1:
+                my_start = rank * blocks_per_rank
+                my_end = (rank + 1) * blocks_per_rank
+                if rank == self.world_size - 1:
+                    my_end = total_blocks
 
-        # Step 4: Flash Attention
-        k = k.repeat_interleave(self.num_key_value_groups, dim=0)
-        v = v.repeat_interleave(self.num_key_value_groups, dim=0)
+                bt_local = bt[my_start:my_end]
+                k_blocks_local = torch.index_select(self.k_cache, 0, bt_local)
+                v_blocks_local = torch.index_select(self.v_cache, 0, bt_local)
+                local_num_blocks = my_end - my_start
+                local_prior_len = local_num_blocks * block_size
+                k_prior_local = k_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
+                v_prior_local = v_blocks_local.squeeze(1).reshape(
+                    num_kv_heads, local_prior_len, self.head_dim
+                )
 
-        q_flash = q.transpose(1, 2)
-        k_flash = k.transpose(1, 2)
-        v_flash = v
+                # Call 1: Prior-only (non-causal, local Q × local prior shard)
+                prior_out, prior_neg_max, prior_sum = NF.flash_attention(
+                    q,
+                    k_prior_local,
+                    v_prior_local,
+                    scale=self.scaling,
+                    causal_mask=False,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                )
 
-        attn_output = NF.flash_attention(
-            q_flash,
-            k_flash,
-            v_flash,
-            scale=self.scaling,
-            tp_q=False,
-            tp_out=True,
-        )
+                # Call 2: Active-only (causal with cp_offset)
+                cp_offset_val = torch.tensor(
+                    [[rank * local_tokens]], dtype=torch.int32, device=q.device
+                )
+                active_out, active_neg_max, active_sum = NF.flash_attention(
+                    q,
+                    k,
+                    v,
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    cache_softmax=True,
+                    skip_output_normalization=True,
+                    cp_offset=cp_offset_val,
+                    global_cp_deg=self.world_size,
+                )
 
-        # Step 5: Output Projection
+                # All-gather prior results
+                all_prior_out = self.tp_group.all_gather(prior_out, dim=0)
+                all_prior_neg_max = self.tp_group.all_gather(prior_neg_max, dim=0)
+                all_prior_sum = self.tp_group.all_gather(prior_sum, dim=0)
+
+                # Online softmax reduction across prior shards
+                num_q_heads = self.num_attention_heads_per_rank
+                combined_out = all_prior_out[:num_q_heads]
+                combined_neg_max = all_prior_neg_max[:num_q_heads]
+                combined_sum = all_prior_sum[:num_q_heads]
+
+                for r in range(1, self.world_size):
+                    chunk_out = all_prior_out[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_neg_max = all_prior_neg_max[r * num_q_heads:(r + 1) * num_q_heads]
+                    chunk_sum = all_prior_sum[r * num_q_heads:(r + 1) * num_q_heads]
+                    combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                        combined_out, combined_neg_max, combined_sum,
+                        chunk_out, chunk_neg_max, chunk_sum,
+                    )
+
+                # Reduce with active attention
+                combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
+                    combined_out, combined_neg_max, combined_sum,
+                    active_out, active_neg_max, active_sum,
+                )
+
+                # Final normalization
+                B_heads = combined_sum.shape[0]
+                sum_recip = 1.0 / torch.clamp(combined_sum, min=1e-10)
+                sum_recip_expanded = sum_recip.transpose(1, 2).reshape(B_heads, -1).unsqueeze(1)
+                attn_output = combined_out * sum_recip_expanded
+
+            else:
+                # Fallback: single-call with prefix caching
+                k_blocks = torch.index_select(self.k_cache, 0, bt)
+                v_blocks = torch.index_select(self.v_cache, 0, bt)
+                padded_kv_len = bt.shape[0] * block_size
+                num_kv_heads = self.num_key_value_heads_per_rank
+                k_prior = k_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+                v_prior = v_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
+                prior_used_len = cached_seq_len.reshape(-1)[0:1]
+
+                attn_output = NF.flash_attention(
+                    q,
+                    k,
+                    v,
+                    scale=self.scaling,
+                    causal_mask=True,
+                    tp_q=True,
+                    tp_k=True,
+                    tp_out=True,
+                    k_prior=k_prior,
+                    v_prior=v_prior,
+                    prior_used_len=prior_used_len,
+                )
+        else:
+            # Full prefill (no segmented attention / first turn)
+            self._write_paged_kv_cache(k, v, slot_mapping, block_size)
+            k_full = k.repeat_interleave(self.num_key_value_groups, dim=0)
+            v_full = v.repeat_interleave(self.num_key_value_groups, dim=0)
+            attn_output = NF.flash_attention(
+                q.transpose(1, 2),
+                k_full.transpose(1, 2),
+                v_full,
+                scale=self.scaling,
+                tp_q=False,
+                tp_out=True,
+            )
+
+        # Output Projection
         attn_output = attn_output.unsqueeze(0)
         attn_output = NF.o_proj(attn_output, self.o_proj_weight)
         attn_output = attn_output.squeeze(0)
 
-        # >>> PARALLELISM: Reduce-scatter to return to SP layout <<<
+        # All-reduce O-proj partial sums (replaces reduce_scatter in Local-Q)
         if self.world_size > 1:
-            attn_output = self.tp_group.reduce_scatter(attn_output, dim=0)
+            attn_output = self.tp_group.all_reduce(attn_output)
 
-        return attn_output.contiguous()
+        return attn_output
 
     # ── Decode path ──────────────────────────────────────────────────────
 
@@ -676,11 +810,8 @@ class Qwen3VLTextMLP(nn.Module):
         set_weight_loader(self.down_proj_weight, down_loader)
 
     def forward(self, hidden_states: torch.Tensor, is_prefill: bool) -> torch.Tensor:
-        """SwiGLU forward with SP/TP collectives."""
-        # >>> PARALLELISM: All-gather from SP for full sequence <<<
-        if is_prefill and self.world_size > 1:
-            hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
-
+        """SwiGLU forward with Local-MLP pattern for prefill."""
+        # Local-MLP: process local tokens only (skip all_gather), all_reduce output
         output = NF.mlp(
             hidden_states,
             self.gate_proj_weight,
@@ -688,10 +819,10 @@ class Qwen3VLTextMLP(nn.Module):
             self.down_proj_weight,
         )
 
-        # >>> PARALLELISM: Combine TP shards <<<
+        # Combine TP shards
         if is_prefill:
             if self.world_size > 1:
-                output = self.tp_group.reduce_scatter(output, dim=0)
+                output = self.tp_group.all_reduce(output)
         else:
             if self.world_size > 1:
                 self.tp_group.all_reduce(output)
