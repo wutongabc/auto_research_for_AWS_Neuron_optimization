@@ -9,7 +9,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 MODEL_PATH="openai/gpt-oss-20b"
 TP_SIZE=8
 MAX_MODEL_LEN=131072
-MAX_NUM_BATCHED_TOKENS=4096
+MAX_NUM_BATCHED_TOKENS=1024
 MAX_NUM_SEQS=1
 PORT=${PORT:-8100}
 
@@ -30,7 +30,7 @@ SERVE_ARGS=(
     --host "0.0.0.0"
     --optimization-level 1
     --enable-chunked-prefill
-    --additional-config "{\"neuron_config\": {\"kv_segment_size_buckets\": [4096], \"num_batched_tokens_buckets\": [4096], \"num_seqs_buckets\": [1]}}"
+    --additional-config "{\"neuron_config\": {\"kv_segment_size_buckets\": [1024], \"num_batched_tokens_buckets\": [1024], \"num_seqs_buckets\": [1]}}"
 )
 
 echo "=== Serving GPT-OSS-20B (Full: TP=$TP_SIZE, ctx=$MAX_MODEL_LEN) ==="

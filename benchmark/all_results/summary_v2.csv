@@ -1,0 +1,9 @@
+model,config,tp,segment_size,variant,avg_prefill_tok_per_s,correctness_pct,notes
+gpt-oss-20b,official_16k,8,1024,baseline,1098.8,100.0,
+gpt-oss-20b,official_16k,8,1024,optimized,17897.2,100.0,16.3x speedup
+gpt-oss-20b,full_128k,8,1024,baseline,136.1,100.0,10 turns only (22s/turn too slow for 42 turns)
+gpt-oss-20b,full_128k,8,1024,optimized,9079.7,100.0,66.7x speedup vs baseline
+gpt-oss-120b,official_16k,32,2048/4096,baseline,1217.1,100.0,seg=2048 (baseline OOMs at seg=1024)
+gpt-oss-120b,official_16k,32,2048/4096,optimized,13933.6,100.0,seg=4096; 11.4x speedup
+gpt-oss-120b,full_128k,32,4096,baseline,~1200,estimated,compilation takes 40+ min; same throughput pattern as official
+gpt-oss-120b,full_128k,32,4096,optimized,11030.1,100.0,21 turns (63K context)

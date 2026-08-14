@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Serve GPT-OSS-120B with tongyi-style full params (TP=16, 128K context, BF16)
+# Serve GPT-OSS-120B with tongyi-style full params (TP=32, 128K context, BF16)
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 MODEL_PATH="openai/gpt-oss-120b"
-TP_SIZE=16
+TP_SIZE=32
 MAX_MODEL_LEN=131072
-MAX_NUM_BATCHED_TOKENS=4096
+MAX_NUM_BATCHED_TOKENS=${SEGMENT_SIZE:-4096}
 MAX_NUM_SEQS=1
 PORT=${PORT:-8100}
 
@@ -31,10 +31,10 @@ SERVE_ARGS=(
     --dtype bfloat16
     --optimization-level 1
     --enable-chunked-prefill
-    --additional-config "{\"neuron_config\": {\"kv_segment_size_buckets\": [4096], \"num_batched_tokens_buckets\": [4096], \"num_seqs_buckets\": [1]}}"
+    --additional-config "{\"neuron_config\": {\"kv_segment_size_buckets\": [${MAX_NUM_BATCHED_TOKENS}], \"num_batched_tokens_buckets\": [${MAX_NUM_BATCHED_TOKENS}], \"num_seqs_buckets\": [1]}}"
 )
 
-echo "=== Serving GPT-OSS-120B (Full: TP=$TP_SIZE, ctx=$MAX_MODEL_LEN, BF16) ==="
+echo "=== Serving GPT-OSS-120B (Full: TP=$TP_SIZE, ctx=$MAX_MODEL_LEN, seg=$MAX_NUM_BATCHED_TOKENS) ==="
 echo "  Port: $PORT"
 
 mkdir -p "$REPO_ROOT/.compile-artifacts"
