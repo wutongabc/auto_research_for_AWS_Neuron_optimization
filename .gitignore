@@ -14,6 +14,7 @@ global_metric_store.json
 
 # Generated images
 *.png
+!assets/*.png
 
 # Benchmark outputs (generated)
 benchmark/baseline_logits_*.json
