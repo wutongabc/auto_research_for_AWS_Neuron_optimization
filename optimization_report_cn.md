@@ -180,3 +180,45 @@ Phase 3 花了大量精力（约 40 次实验）在 MoE CTE 内核微优化上�
 |------|-------|-------------|----------|--------|
 | Medium (TP=4, 32K) | 12,503 | 100% | 712 | 17.6× |
 | Full (TP=8, 128K) | 6,200 | 100% | 258 | 24.0× |
+
+---
+
+## 多模型移植：GPT-OSS 与 Qwen3-VL
+
+将全部优化（Local-Q + Context Parallel + Local-MoE/MLP）移植到三个额外的模型，
+同一 trn2.48xlarge 硬件（64 NeuronCores, 24GB HBM/core）。
+
+### 结果（公平对比 — 匹配的 segment size）
+
+| 模型 | 配置 | seg_size | Baseline (tok/s) | 优化后 (tok/s) | 加速比 |
+|------|------|----------|-----------------|----------------|--------|
+| GPT-OSS-20B | TP=8, 16K ctx | 1024 | 1,099 | 17,897 | **16.3×** |
+| GPT-OSS-20B | TP=8, 128K ctx | 1024 | 136 | 9,080 | **66.7×** |
+| GPT-OSS-120B | TP=32, 16K ctx | 2048/4096 | 1,217 | 13,934 | **11.4×** |
+| GPT-OSS-120B | TP=32, 128K ctx | 4096 | ~1,200 (est.) | 11,030 | **~9.2×** |
+| Qwen3-VL-32B | TP=16, 32K ctx | 4096 | 9,840 | 27,425 | **2.8×** |
+| Qwen3-VL-32B | TP=8, 128K ctx | 4096 | 4,439 | 10,602 | **2.4×** |
+
+所有优化后运行：100% correctness（top-1 logit 匹配）。
+
+### 模型适配
+
+- **GPT-OSS-20B/120B**（MoE, 128 experts, top-8）：直接应用 Local-Q + CP + Local-MoE。
+  与 Tongyi 相同架构（不同规模），优化直接迁移。
+- **Qwen3-VL-32B**（Dense）：无 MoE，因此 Local-MoE 替换为 Local-MLP（相同模式：
+  跳过 all_gather，处理 local tokens，all_reduce 输出）。
+
+### 关键发现
+
+1. **MoE 模型收益最大**：11-67× 加速，来自同时消除 attention 和 MoE 的 all_gather。
+2. **Dense 模型收益较小**：仅靠 Local-Q + CP + Local-MLP 获得 2.4-2.8×（无 MoE 节省）。
+3. **长上下文放大增益**：OSS-20B 从 16K 的 16.3× 跳到 128K 的 66.7×，因为 baseline
+   随 segment 数量退化（128 segments × 每个 full all_gather）。
+4. **OSS-120B 需要 TP=32**：Baseline 在 TP=16 下 OOM（模型权重 + all_gather 激活
+   超出 24GB HBM）。我们的优化代码可在 TP=16 运行，但 baseline 对比需要 TP=32。
+
+### Padding 效应分析
+
+初始测试用 seg=8192 显示 OSS-20B 有 57× 加速。3000 tok/turn 被 padding 到 8192 时，
+baseline 浪费 63% 计算在 padding 上。用 seg=1024（~3% padding）后，真实算法加速比
+为 16.3×——仍然巨大，源于消除 all_gather 通信。

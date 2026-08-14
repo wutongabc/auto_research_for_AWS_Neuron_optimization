@@ -18,7 +18,7 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) �
 MoE models benefit most from Local-Q + Context Parallel + Local-MoE (eliminating all_gather).
 Dense models gain 2-3x from Local-Q + CP + Local-MLP alone.
 
-> Detailed per-round results, analysis, and constraints → [benchmark/all_results/REPORT.md](benchmark/all_results/REPORT.md)
+> Detailed per-round results, analysis, and constraints → [optimization_report_en.md](optimization_report_en.md) | [中文版](optimization_report_cn.md)
 
 ### Tongyi-30B-A3B Optimization Timeline
 
@@ -64,7 +64,3 @@ docker exec neuron-prefill bash -c "cd /dev3/zigeng/bc/opt && bash run/serve_med
 - Long-context optimization (attention/CP) required manual steering — the agent initially fixated on MoE for 12 hours before being redirected.
 - A clean, constrained directory structure (explicit editable vs read-only) is critical for productive auto-research.
 
-## Reports
-
-- [optimization_report_en.md](optimization_report_en.md) — English optimization log
-- [optimization_report_cn.md](optimization_report_cn.md) — 中文优化日志

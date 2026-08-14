@@ -180,3 +180,45 @@ After Round 3, the system is bound by **prior attention kernel execution time**:
 |--------|-------|-------------|----------|---------|
 | Medium (TP=4, 32K) | 12,503 | 100% | 712 | 17.6× |
 | Full (TP=8, 128K) | 6,200 | 100% | 258 | 24.0× |
+
+---
+
+## Multi-Model Port: GPT-OSS & Qwen3-VL
+
+Ported all optimizations (Local-Q + Context Parallel + Local-MoE/MLP) to three additional models
+on the same trn2.48xlarge hardware (64 NeuronCores, 24GB HBM/core).
+
+### Results (Fair Comparison — Matched Segment Sizes)
+
+| Model | Config | seg_size | Baseline (tok/s) | Optimized (tok/s) | Speedup |
+|-------|--------|----------|-----------------|-------------------|---------|
+| GPT-OSS-20B | TP=8, 16K ctx | 1024 | 1,099 | 17,897 | **16.3×** |
+| GPT-OSS-20B | TP=8, 128K ctx | 1024 | 136 | 9,080 | **66.7×** |
+| GPT-OSS-120B | TP=32, 16K ctx | 2048/4096 | 1,217 | 13,934 | **11.4×** |
+| GPT-OSS-120B | TP=32, 128K ctx | 4096 | ~1,200 (est.) | 11,030 | **~9.2×** |
+| Qwen3-VL-32B | TP=16, 32K ctx | 4096 | 9,840 | 27,425 | **2.8×** |
+| Qwen3-VL-32B | TP=8, 128K ctx | 4096 | 4,439 | 10,602 | **2.4×** |
+
+All optimized runs: 100% correctness (top-1 logit match).
+
+### Model-Specific Adaptations
+
+- **GPT-OSS-20B/120B** (MoE, 128 experts, top-8): Applied Local-Q + CP + Local-MoE.
+  Same architecture as Tongyi but different sizes, so optimizations transfer directly.
+- **Qwen3-VL-32B** (Dense): No MoE, so Local-MoE replaced by Local-MLP (same pattern:
+  skip all_gather, process local tokens, all_reduce output).
+
+### Key Findings
+
+1. **MoE models benefit most**: 11-67× speedup driven by eliminating both attention and MoE all_gather.
+2. **Dense models gain less**: 2.4-2.8× from Local-Q + CP + Local-MLP alone (no MoE savings).
+3. **Long context amplifies gains**: OSS-20B goes from 16.3× at 16K to 66.7× at 128K because
+   baseline degrades with segment count (128 segments × full all_gather each).
+4. **OSS-120B requires TP=32**: Baseline OOMs at TP=16 (model weights + all_gather activations
+   exceed 24GB HBM). Our optimized code runs at TP=16 but baseline comparison needs TP=32.
+
+### Padding Effect Analysis
+
+Initial tests with seg=8192 showed 57× speedup for OSS-20B. With 3000 tok/turn padded to 8192,
+baseline wastes 63% compute on padding. At seg=1024 (~3% padding), the true algorithmic speedup
+is 16.3× — still enormous, driven by elimination of all_gather communication.
