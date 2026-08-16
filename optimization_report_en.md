@@ -128,6 +128,50 @@ Same principle applied to the feed-forward layer: skip the input all_gather, pro
 
 **Dense adaptation (Local-MLP)**: For models without MoE (e.g., Qwen3-VL), the same pattern applies to the dense MLP. Each rank stores the full MLP weights (5120→25600→5120) and processes only its local tokens. The trade-off is less favorable for dense models because MLP weights are large relative to communication savings.
 
+### NKI Flash Attention Kernel
+
+The attention operations above (both prior and active) are executed by a custom NKI (Neuron Kernel Interface) kernel: `attention_cte`. This is a hardware-native kernel written directly for Trainium's compute engines — not a PyTorch implementation compiled through XLA.
+
+**Why a custom kernel matters**: Standard PyTorch attention materializes the full S = Q × K^T score matrix in HBM before computing softmax and P × V. For 1024 Q tokens × 30K KV tokens, this is a 60M-element intermediate tensor. The NKI kernel never materializes it — it processes K/V in 8K-token sections with running softmax statistics, keeping intermediates in on-chip SBUF (scratchpad).
+
+**Kernel architecture** (4 levels of tiling):
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ NKI attention_cte kernel                                    │
+│                                                             │
+│ Level 1: Program sharding across NeuronCores                │
+│ Level 2: Batch loop (handles GQA natively: B_q > B_kv)      │
+│ Level 3: Section loop (flash attention for long sequences)  │
+│   - K/V split into 8K-token sections                        │
+│   - Each section fits in SBUF                               │
+│   - Running max/sum stats across sections (flash rescaling) │
+│ Level 4: Q-group loop (128 tokens per group)                │
+│   - Software pipeline: overlaps 3 consecutive groups        │
+│     * Group i:   P×V matmul + writeback to HBM              │
+│     * Group i+1: exp() computation                          │
+│     * Group i+2: Q load from HBM + Q×K matmul              │
+│   - K tiles: 512 tokens loaded into SBUF cache              │
+│   - V tiles: 128 tokens for P×V accumulation                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Key features used by our optimizations**:
+
+| Feature | How it's used |
+|---------|---------------|
+| `k_prior` / `v_prior` | Prefix caching: pass prior KV separately from active KV |
+| `cache_softmax=True` | Returns unnormalized output + stats for CP merge |
+| `cp_offset` / `global_cp_deg` | Context parallel: correct causal masking with Q position offset |
+| Native GQA | B_q=32, B_kv=4 → kernel broadcasts KV internally, no replication |
+| `causal_mask=False` | Prior attention is non-causal (all prior tokens are visible) |
+
+**Performance impact**: The kernel provides +150% throughput over the previous PyTorch-based segmented attention (Round 2, optimization #7). The gains come from:
+1. No HBM materialization of the score matrix
+2. Software pipelining hides DMA latency behind compute
+3. SBUF-resident K cache tiles avoid repeated HBM reads
+4. Native GQA eliminates K/V replication overhead
+
 ### Combined Per-Layer Flow
 
 ```

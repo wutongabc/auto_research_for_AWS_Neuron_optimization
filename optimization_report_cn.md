@@ -128,6 +128,50 @@ Local-Q 消除 attention 前的 hidden all_gather，让每个 rank 只在本地 
 
 **Dense 适配（Local-MLP）**: 对没有 MoE 的模型（如 Qwen3-VL），同样的模式应用于 dense MLP。每 rank 存完整 MLP 权重（5120→25600→5120），只处理本地 tokens。对 dense 模型这个 trade-off 不如 MoE 划算，因为 MLP 权重相对于通信节省较大。
 
+### NKI Flash Attention 内核
+
+上述 attention 操作（prior 和 active）均由定制 NKI (Neuron Kernel Interface) 内核 `attention_cte` 执行。这是直接为 Trainium 计算引擎编写的硬件原生内核——不是通过 XLA 编译的 PyTorch 实现。
+
+**为什么需要定制内核**: 标准 PyTorch attention 在 HBM 中实体化完整的 S = Q × K^T 分数矩阵再做 softmax 和 P × V。对于 1024 Q tokens × 30K KV tokens，这是一个 60M 元素的中间张量。NKI 内核从不实体化它——它将 K/V 分成 8K-token sections，使用 running softmax 统计量，中间结果保留在片上 SBUF（scratchpad）中。
+
+**内核架构**（4 级 tiling）：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ NKI attention_cte 内核                                      │
+│                                                             │
+│ Level 1: 跨 NeuronCore 的 program sharding                  │
+│ Level 2: Batch 循环（原生处理 GQA: B_q > B_kv）              │
+│ Level 3: Section 循环（长序列的 flash attention）             │
+│   - K/V 切为 8K-token sections                              │
+│   - 每个 section 放入 SBUF                                   │
+│   - 跨 section 维护 running max/sum 统计量（flash 重缩放）    │
+│ Level 4: Q-group 循环（每组 128 tokens）                     │
+│   - 软件流水线：重叠 3 个连续 group 的操作                    │
+│     * Group i:   P×V matmul + 写回 HBM                      │
+│     * Group i+1: exp() 计算                                  │
+│     * Group i+2: Q 从 HBM 加载 + Q×K matmul                 │
+│   - K tiles: 512 tokens 加载到 SBUF cache                   │
+│   - V tiles: 128 tokens 用于 P×V 累加                       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**我们优化中使用的关键特性**：
+
+| 特性 | 用法 |
+|------|------|
+| `k_prior` / `v_prior` | Prefix caching：历史 KV 与当前 KV 分开传入 |
+| `cache_softmax=True` | 返回未归一化输出 + 统计量，用于 CP 合并 |
+| `cp_offset` / `global_cp_deg` | Context parallel：Q 位置偏移实现正确因果 mask |
+| 原生 GQA | B_q=32, B_kv=4 → 内核内部广播 KV，无需复制 |
+| `causal_mask=False` | Prior attention 非因果（所有历史 tokens 可见）|
+
+**性能影响**: 该内核相比之前基于 PyTorch 的 segmented attention 提供 +150% 吞吐（第二轮优化 #7）。增益来自：
+1. 不在 HBM 中实体化分数矩阵
+2. 软件流水线将 DMA 延迟隐藏在计算之后
+3. SBUF 驻留的 K cache tiles 避免重复 HBM 读取
+4. 原生 GQA 消除 K/V 复制开销
+
 ### 完整优化后的单层流程
 
 ```
