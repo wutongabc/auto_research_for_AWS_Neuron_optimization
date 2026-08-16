@@ -27,31 +27,132 @@
 
 三个优化共享同一原则：**用少量 token 上的本地计算 + 小型集合通信，替代大规模 all_gather 激活值**。
 
+### 背景：标准 Tensor Parallelism
+
+标准 TP 中，序列被分到各 rank，每个 transformer 层的流程：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 标准 TP (TP=4, seq_len=4096)                                │
+│                                                             │
+│ 每 rank 起始有 1024 local tokens (hidden_size=2048)          │
+│                                                             │
+│ 1. all_gather hidden → 每 rank 拿到全部 4096 tokens          │  ← 16 MB 通信
+│ 2. QKV 投影（列切分权重，处理全部 4096 tokens）                │
+│ 3. Attention（每 rank 处理自己的 head 分片）                  │
+│ 4. O-projection → reduce-scatter                            │  ← 16 MB 通信
+│ 5. 再次 all_gather hidden 给 MoE/MLP                        │  ← 16 MB 通信
+│ 6. MoE/MLP（列切分权重，处理全部 4096 tokens）                │
+│ 7. reduce-scatter → 回到 1024 local tokens                  │  ← 16 MB 通信
+└─────────────────────────────────────────────────────────────┘
+每层总通信量: ~64 MB
+```
+
+问题：TP=4 下 48 层意味着**每次 prefill 约 3 GB 通信**——远超实际计算需求。
+
 ### Local-Q
 
-标准 TP 在每层开始时 all_gather 全部 hidden states（如 TP=4 时 16MB/层），然后每个 rank 计算 QKV 的一个分片。Local-Q 反转这个流程：
+Local-Q 消除 attention 前的 hidden all_gather，让每个 rank 只在本地 tokens 上计算：
 
-1. 每个 rank 只保留自己的本地 token 切片（seq_len / TP）
-2. 在该切片上计算完整 QKV — **计算量降为 1/TP**
-3. 只 all_gather 小的 K/V 张量（各 256KB vs hidden 的 16MB）
-4. O-projection 改用 all_reduce 代替 reduce-scatter
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Local-Q (TP=4, seq_len=4096)                                │
+│                                                             │
+│ 每 rank 只保留自己的 1024 local tokens                       │
+│                                                             │
+│ 1. 本地 1024 tokens 做 QKV（完整权重，不切分）                │  ← 计算量降为 1/4
+│ 2. 只 all_gather K 和 V                                     │  ← 0.5 MB（不是 16 MB）
+│ 3. Attention: local Q (1024) × global KV (4096)             │
+│ 4. O-projection → all_reduce                                │  ← 4 MB（不是 16 MB）
+└─────────────────────────────────────────────────────────────┘
+```
+
+**为什么 K/V 很小**: GQA 的 KV heads 远少于 Q heads（Tongyi: 4 vs 32）。每 rank 本地 K = `1024 tokens × 1 head × 128 dim × 2B = 256KB`。4 个 rank all_gather K+V = 0.5 MB——比 16 MB hidden all_gather **小 32 倍**。
+
+**前提条件**: 此优化根本依赖于 GQA。如果是标准 MHA（kv_heads = q_heads），K/V 会和 hidden states 一样大，通信节省消失。
+
+**每层通信节省**:
+
+| 操作 | 标准 TP | Local-Q | 节省 |
+|------|---------|---------|------|
+| hidden all_gather | 16 MB | **0** | -16 MB |
+| KV all_gather | 0 | 0.5 MB | +0.5 MB |
+| O-proj 输出 | 16 MB (reduce-scatter) | 4 MB (all_reduce) | -12 MB |
+| **合计** | **32 MB** | **4.5 MB** | **-27.5 MB** |
 
 ### Context Parallel (CP)
 
-将历史 KV cache 均匀切分到各 rank：
+长上下文下，大部分 KV cache 来自**历史 turn**（已计算并存储）。例如 32K 对话的第 10 轮：
+- 历史 KV: ~27,000 tokens（第 1-9 轮）
+- 当前 tokens: ~3,000（本轮）
 
-1. 每个 rank 只对 1/TP 的历史 cache 做 attention（non-causal）
-2. 内核返回未归一化输出 + softmax 统计量（`cache_softmax=True`）
-3. all_gather 后用 online softmax reduction 合并 — **数学精确**
+标准 attention 在每个 rank 上对全部 27K 历史 tokens 做 Q × K_prior。CP 将其分摊：
 
-这将历史 attention 计算量降为 1/TP。在长上下文（128K）下，历史 attention 占总时间的绝大部分。
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Context Parallel (TP=4, prior KV = 28K tokens)              │
+│                                                             │
+│ 历史 KV 切分: 每 rank 存储 7K tokens 的历史 cache             │
+│                                                             │
+│ 1. Prior attention: Q × K_local_shard (7K, non-causal)      │  ← 计算量降为 1/4
+│    → 返回未归一化输出 + softmax 统计量                        │
+│ 2. Active attention: Q × K_active (3K, causal, local)       │
+│ 3. all_gather prior outputs + softmax stats                 │  ← 8 MB
+│ 4. Online softmax reduction 合并所有分片                     │  ← 精确，非近似
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Online softmax reduction**: `softmax(Q × [K₁, K₂, K₃, K₄])` 可以分解为合并 `softmax(Q × K₁)`, `softmax(Q × K₂)` 等，使用 log-sum-exp 技巧。数学上精确——不是近似。
+
+**为什么长上下文下重要**: Prior attention 随 seq_len 线性增长。128K 上下文时每 rank 要算 Q × K 对 128K tokens。CP 在 TP=4 下每 rank 只对 32K tokens 计算——主导操作减少 4×。
 
 ### Local-MoE / Local-MLP
 
-同一思路应用于前馈层：
+同一原则应用于前馈层：跳过输入 all_gather，只处理本地 tokens。
 
-- **MoE 模型**: 每 rank 保留全部 expert 权重，只对本地 token 做路由和计算，all_reduce 输出。完全消除 MoE 输入的 all_gather。
-- **Dense 模型**: 每 rank 保留完整 MLP 权重（hidden→intermediate→hidden），只处理本地 token，all_reduce 输出。以权重内存换取通信消除。
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 标准 TP MoE                        │ Local-MoE              │
+│                                    │                        │
+│ 1. all_gather hidden (16 MB)       │ 1.（跳过）             │
+│ 2. 路由全部 4096 tokens             │ 2. 路由 1024 local     │
+│ 3. Expert 计算（weights/TP）        │ 3. Expert 计算         │
+│    （intermediate 按列切分）         │    （完整权重）         │
+│ 4. reduce-scatter (16 MB)          │ 4. all_reduce (4 MB)  │
+└────────────────────────────────────┴────────────────────────┘
+```
+
+**核心 trade-off**: 每 rank 存储**完整** expert 权重（不切分）。这多用了 HBM，但完全消除了 MoE 前的通信。对于 128 experts 的 MoE 模型，权重很大——但 24GB HBM/core 且只有 3B 激活参数，内存预算充足。
+
+**没有重复计算**: 每个 rank 处理不同的 tokens。Rank 0 将 tokens [0,1023] 路由到 experts，Rank 1 路由 [1024,2047]，以此类推。权重是重复的，计算不是。
+
+**Dense 适配（Local-MLP）**: 对没有 MoE 的模型（如 Qwen3-VL），同样的模式应用于 dense MLP。每 rank 存完整 MLP 权重（5120→25600→5120），只处理本地 tokens。对 dense 模型这个 trade-off 不如 MoE 划算，因为 MLP 权重相对于通信节省较大。
+
+### 完整优化后的单层流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 优化后完整层 (Local-Q + CP + Local-MoE)                      │
+│                                                             │
+│ 输入: 每 rank 1024 local tokens                              │
+│                                                             │
+│ [Attention]                                                 │
+│ 1. 本地 1024 tokens 做 QKV（完整权重）                        │
+│ 2. all_gather K,V (0.5 MB)                                  │
+│ 3. Prior attention 在本地 KV shard 上（CP）                   │
+│ 4. Active attention 带 causal mask                          │
+│ 5. all_gather prior outputs → online softmax 合并 (8 MB)    │
+│ 6. O-proj → all_reduce (4 MB)                               │
+│                                                             │
+│ [MoE/MLP]                                                   │
+│ 7. 路由 + expert 计算，只处理 1024 local tokens               │
+│ 8. all_reduce 输出 (4 MB)                                   │
+│                                                             │
+│ 输出: 每 rank 1024 local tokens                              │
+│                                                             │
+│ 总通信量: ~16.5 MB（vs 标准 TP 的 ~64 MB）                    │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 

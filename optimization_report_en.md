@@ -27,31 +27,132 @@ All baselines measured on same hardware with stock vLLM-Neuron code and default 
 
 All three optimizations share one principle: **replace large all_gather of activations with local compute on fewer tokens + a small collective at the end**.
 
+### Background: Standard Tensor Parallelism
+
+In standard TP, a sequence of tokens is split across ranks. Each transformer layer proceeds as:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Standard TP (TP=4, seq_len=4096)                            │
+│                                                             │
+│ Each rank starts with 1024 local tokens (hidden_size=2048)  │
+│                                                             │
+│ 1. all_gather hidden → every rank gets all 4096 tokens      │  ← 16 MB communication
+│ 2. QKV projection (column-sharded weights, all 4096 tokens) │
+│ 3. Attention (each rank handles its head shard)             │
+│ 4. O-projection → reduce-scatter                            │  ← 16 MB communication
+│ 5. all_gather hidden again for MoE/MLP                      │  ← 16 MB communication
+│ 6. MoE/MLP (column-sharded weights, all 4096 tokens)        │
+│ 7. reduce-scatter → back to 1024 local tokens               │  ← 16 MB communication
+└─────────────────────────────────────────────────────────────┘
+Total communication per layer: ~64 MB
+```
+
+The problem: at TP=4 with 48 layers, this is **~3 GB of communication per prefill step** — far more than the actual compute requires.
+
 ### Local-Q
 
-Standard TP starts each layer with an all_gather to give every rank the full hidden states (e.g. 16MB/layer at TP=4), then each rank computes a shard of QKV. Local-Q flips this:
+Local-Q eliminates the hidden all_gather before attention by keeping each rank's computation on its local tokens only:
 
-1. Each rank keeps only its local token slice (seq_len / TP)
-2. Computes full QKV on that slice — **TP× less compute**
-3. all_gathers only the small K/V tensors (256KB each vs 16MB hidden)
-4. O-projection uses all_reduce instead of reduce-scatter
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Local-Q (TP=4, seq_len=4096)                                │
+│                                                             │
+│ Each rank keeps only its 1024 local tokens                  │
+│                                                             │
+│ 1. QKV on local 1024 tokens (FULL weights, not sharded)     │  ← 4× less compute
+│ 2. all_gather K and V only                                  │  ← 0.5 MB (not 16 MB)
+│ 3. Attention: local Q (1024) × global KV (4096)             │
+│ 4. O-projection → all_reduce                                │  ← 4 MB (not 16 MB)
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Why K/V are small**: GQA uses far fewer KV heads than Q heads (4 vs 32 for Tongyi). Each rank's local K is only `1024 tokens × 1 head × 128 dim × 2B = 256KB`. All_gathering K+V across 4 ranks = 0.5 MB total — **32× smaller** than the 16 MB hidden all_gather it replaces.
+
+**Prerequisite**: This optimization fundamentally depends on GQA. With standard MHA (kv_heads = q_heads), K/V would be as large as hidden states, and the communication savings would disappear.
+
+**Communication savings per layer**:
+
+| Operation | Standard TP | Local-Q | Savings |
+|-----------|-------------|---------|---------|
+| hidden all_gather | 16 MB | **0** | -16 MB |
+| KV all_gather | 0 | 0.5 MB | +0.5 MB |
+| O-proj output | 16 MB (reduce-scatter) | 4 MB (all_reduce) | -12 MB |
+| **Net** | **32 MB** | **4.5 MB** | **-27.5 MB** |
 
 ### Context Parallel (CP)
 
-Cached KV from prior turns is split evenly across ranks:
+At long context, most of the KV cache is from **prior turns** (already computed and stored). For example, at turn 10 of a 32K context conversation:
+- Prior KV: ~27,000 tokens (from turns 1-9)
+- Active tokens: ~3,000 (current turn)
 
-1. Each rank computes attention over only 1/TP of the prior cache (non-causal)
-2. Kernel returns unnormalized output + softmax statistics (`cache_softmax=True`)
-3. all_gather + online softmax reduction merges results — **mathematically exact**
+Standard attention computes Q × K_prior for all 27K prior tokens on every rank. CP distributes this:
 
-This cuts prior-attention compute by TP×. At long context (128K), prior attention dominates total time.
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Context Parallel (TP=4, prior KV = 28K tokens)              │
+│                                                             │
+│ Prior KV split: each rank stores 7K tokens of prior cache   │
+│                                                             │
+│ 1. Prior attention: Q × K_local_shard (7K, non-causal)      │  ← 4× less compute
+│    → returns unnormalized output + softmax stats            │
+│ 2. Active attention: Q × K_active (3K, causal, local)       │
+│ 3. all_gather prior outputs + softmax stats                 │  ← 8 MB
+│ 4. Online softmax reduction to merge all shards             │  ← exact, no approximation
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Online softmax reduction**: `softmax(Q × [K₁, K₂, K₃, K₄])` can be decomposed as merging `softmax(Q × K₁)`, `softmax(Q × K₂)`, etc. using the log-sum-exp trick. This is mathematically exact — not an approximation.
+
+**Why this matters at long context**: Prior attention scales as O(seq_len). At 128K context, each rank would compute Q × K for 128K tokens. With CP at TP=4, each rank only computes against 32K tokens — a 4× reduction in the dominant compute operation.
 
 ### Local-MoE / Local-MLP
 
-Same idea applied to the feed-forward layer:
+Same principle applied to the feed-forward layer: skip the input all_gather, process only local tokens.
 
-- **MoE models**: Each rank keeps full expert weights, routes and processes only local tokens, all_reduces output. Eliminates the MoE input all_gather entirely.
-- **Dense models**: Each rank keeps full MLP weights (hidden→intermediate→hidden), processes local tokens only, all_reduces output. Trades weight memory for communication savings.
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Standard TP MoE                    │ Local-MoE              │
+│                                    │                        │
+│ 1. all_gather hidden (16 MB)       │ 1. (skip)             │
+│ 2. Route ALL 4096 tokens           │ 2. Route 1024 local   │
+│ 3. Expert compute (weights/TP)     │ 3. Expert compute     │
+│    (sharded intermediate dim)      │    (FULL weights)     │
+│ 4. reduce-scatter (16 MB)          │ 4. all_reduce (4 MB)  │
+└────────────────────────────────────┴────────────────────────┘
+```
+
+**Key trade-off**: Each rank stores the **full** expert weights (not sharded). This uses more HBM per rank, but eliminates all communication before MoE. For MoE models with many experts (128), the weights are large — but with 24GB HBM/core and only 3B active params, the memory budget is sufficient.
+
+**No redundant computation**: Each rank processes a different set of tokens. Rank 0 routes tokens [0,1023] to experts, Rank 1 routes [1024,2047], etc. The weights are duplicated, the work is not.
+
+**Dense adaptation (Local-MLP)**: For models without MoE (e.g., Qwen3-VL), the same pattern applies to the dense MLP. Each rank stores the full MLP weights (5120→25600→5120) and processes only its local tokens. The trade-off is less favorable for dense models because MLP weights are large relative to communication savings.
+
+### Combined Per-Layer Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Full optimized layer (Local-Q + CP + Local-MoE)             │
+│                                                             │
+│ Input: 1024 local tokens per rank                           │
+│                                                             │
+│ [Attention]                                                 │
+│ 1. QKV on 1024 local tokens (full weights)                  │
+│ 2. all_gather K,V (0.5 MB)                                  │
+│ 3. Prior attention on local KV shard (CP)                   │
+│ 4. Active attention with causal mask                        │
+│ 5. all_gather prior outputs → online softmax merge (8 MB)   │
+│ 6. O-proj → all_reduce (4 MB)                               │
+│                                                             │
+│ [MoE/MLP]                                                   │
+│ 7. Route + expert compute on 1024 local tokens              │
+│ 8. all_reduce output (4 MB)                                 │
+│                                                             │
+│ Output: 1024 local tokens per rank                          │
+│                                                             │
+│ Total communication: ~16.5 MB (vs ~64 MB standard TP)       │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
