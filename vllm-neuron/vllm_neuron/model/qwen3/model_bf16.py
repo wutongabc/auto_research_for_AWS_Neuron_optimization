@@ -561,22 +561,9 @@ class Qwen3Attention(nn.Module):
                     num_kv_heads, local_prior_len, self.head_dim
                 )
 
-                # Call 1: Prior-only (non-causal, local Q × local prior shard)
-                prior_out, prior_neg_max, prior_sum = NF.flash_attention(
-                    q,
-                    k_prior_local,
-                    v_prior_local,
-                    scale=self.scaling,
-                    causal_mask=False,
-                    tp_q=True,
-                    tp_k=True,
-                    tp_out=True,
-                    cache_softmax=True,
-                    skip_output_normalization=True,
-                )
-
-                # Call 2: Active-only (causal, local Q × local K/V only)
-                active_out, active_neg_max, active_sum = NF.flash_attention(
+                # Single fused call: active (causal) + prior (prefix cache)
+                local_prior_used = prior_used_len // self.world_size
+                attn_output = NF.flash_attention(
                     q,
                     k_local,
                     v_local,
@@ -585,21 +572,10 @@ class Qwen3Attention(nn.Module):
                     tp_q=True,
                     tp_k=True,
                     tp_out=True,
-                    cache_softmax=True,
-                    skip_output_normalization=True,
+                    k_prior=k_prior_local,
+                    v_prior=v_prior_local,
+                    prior_used_len=local_prior_used,
                 )
-
-                # Combine prior + active locally
-                combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
-                    prior_out, prior_neg_max, prior_sum,
-                    active_out, active_neg_max, active_sum,
-                )
-
-                # Final normalization
-                B_heads = combined_sum.shape[0]
-                sum_recip = 1.0 / torch.clamp(combined_sum, min=1e-10)
-                sum_recip_expanded = sum_recip.transpose(1, 2).reshape(B_heads, -1).unsqueeze(1)
-                attn_output = combined_out * sum_recip_expanded
 
             else:
                 # Fallback: single-call with prefix caching
