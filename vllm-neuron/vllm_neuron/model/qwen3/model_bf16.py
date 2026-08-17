@@ -466,7 +466,7 @@ class Qwen3Attention(nn.Module):
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
         attn_metadata: object | None = None,
     ) -> torch.Tensor:
-        """Prefill: local-Q QKV proj → all_gather KV → CP attention → O proj → all_reduce."""
+        """Prefill: local-Q QKV proj → local KV write → CP attention → O proj → all_reduce."""
         if attn_metadata is None:
             return torch.zeros_like(hidden_states)
 
@@ -513,14 +513,6 @@ class Qwen3Attention(nn.Module):
             local_tokens, self.num_key_value_heads_per_rank, self.head_dim
         ).transpose(0, 1)
 
-        # All-gather K/V to reconstruct full active KV (tiny: 256KB each)
-        if self.world_size > 1:
-            k = self.tp_group.all_gather(k_local.contiguous(), dim=1)
-            v = self.tp_group.all_gather(v_local.contiguous(), dim=1)
-        else:
-            k = k_local
-            v = v_local
-
         # Metadata
         layer_name = f"layers.{self.layer_idx}.self_attn"
         slot_mapping = attn_metadata[layer_name]["slot_mapping"]
@@ -541,16 +533,15 @@ class Qwen3Attention(nn.Module):
             bt = block_table[0].to(torch.int64).clamp_min(0)
             num_kv_heads = self.num_key_value_heads_per_rank
 
-            # Write FULL gathered KV to cache (all ranks write same data)
-            self._write_paged_kv_cache(k, v, slot_mapping, block_size)
+            # Write only LOCAL K/V to cache (no all_gather needed)
+            local_slot_mapping = slot_mapping[rank * local_tokens:(rank + 1) * local_tokens]
+            self._write_paged_kv_cache(k_local, v_local, local_slot_mapping, block_size)
 
             prior_used_len = cached_seq_len.reshape(-1)[0:1]
 
-            # === Local-Q Context Parallel ===
-            # Q is local (1024 tokens/rank), K/V active is full (4096 tokens).
-            # Prior KV is split across ranks (disjoint shards).
-            total_blocks = bt.shape[0]  # static: 472
-            blocks_per_rank = total_blocks // self.world_size  # static: 118
+            # === Local-Q with local prior + local active ===
+            total_blocks = bt.shape[0]
+            blocks_per_rank = total_blocks // self.world_size
 
             if self.world_size > 1 and blocks_per_rank >= 1:
                 my_start = rank * blocks_per_rank
@@ -572,9 +563,9 @@ class Qwen3Attention(nn.Module):
 
                 # Call 1: Prior-only (non-causal, local Q × local prior shard)
                 prior_out, prior_neg_max, prior_sum = NF.flash_attention(
-                    q,                   # [8, 1024, 128]
-                    k_prior_local,       # [1, local_prior_len, 128]
-                    v_prior_local,       # [1, local_prior_len, 128]
+                    q,
+                    k_prior_local,
+                    v_prior_local,
                     scale=self.scaling,
                     causal_mask=False,
                     tp_q=True,
@@ -584,14 +575,11 @@ class Qwen3Attention(nn.Module):
                     skip_output_normalization=True,
                 )
 
-                # Call 2: Active-only (causal with cp_offset, local Q × full K)
-                cp_offset_val = torch.tensor(
-                    [[rank * local_tokens]], dtype=torch.int32, device=q.device
-                )
+                # Call 2: Active-only (causal, local Q × local K/V only)
                 active_out, active_neg_max, active_sum = NF.flash_attention(
-                    q,    # [8, 1024, 128]
-                    k,    # [1, 4096, 128]
-                    v,    # [1, 4096, 128]
+                    q,
+                    k_local,
+                    v_local,
                     scale=self.scaling,
                     causal_mask=True,
                     tp_q=True,
@@ -599,12 +587,9 @@ class Qwen3Attention(nn.Module):
                     tp_out=True,
                     cache_softmax=True,
                     skip_output_normalization=True,
-                    cp_offset=cp_offset_val,
-                    global_cp_deg=self.world_size,
                 )
 
-                # Combine prior + active locally (no cross-rank gather needed:
-                # each rank's GQA group is independent)
+                # Combine prior + active locally
                 combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
                     prior_out, prior_neg_max, prior_sum,
                     active_out, active_neg_max, active_sum,
@@ -626,8 +611,8 @@ class Qwen3Attention(nn.Module):
 
                 attn_output = NF.flash_attention(
                     q,
-                    k,
-                    v,
+                    k_local,
+                    v_local,
                     scale=self.scaling,
                     causal_mask=True,
                     tp_q=True,
@@ -638,13 +623,12 @@ class Qwen3Attention(nn.Module):
                     prior_used_len=prior_used_len,
                 )
         else:
-            self._write_paged_kv_cache(k, v, slot_mapping, block_size)
-            k_full = k.repeat_interleave(self.num_key_value_groups, dim=0)
-            v_full = v.repeat_interleave(self.num_key_value_groups, dim=0)
+            local_sm = slot_mapping[rank * local_tokens:(rank + 1) * local_tokens] if self.world_size > 1 else slot_mapping
+            self._write_paged_kv_cache(k_local, v_local, local_sm, block_size)
             attn_output = NF.flash_attention(
                 q.transpose(1, 2),
-                k_full.transpose(1, 2),
-                v_full,
+                k_local.repeat_interleave(self.num_key_value_groups, dim=0).transpose(1, 2),
+                v_local.repeat_interleave(self.num_key_value_groups, dim=0),
                 scale=self.scaling,
                 tp_q=False,
                 tp_out=True,
