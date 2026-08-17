@@ -603,29 +603,10 @@ class Qwen3Attention(nn.Module):
                     global_cp_deg=self.world_size,
                 )
 
-                # All-gather prior results (4× smaller than before: [8,128,1024])
-                all_prior_out = self.tp_group.all_gather(prior_out, dim=0)
-                all_prior_neg_max = self.tp_group.all_gather(prior_neg_max, dim=0)
-                all_prior_sum = self.tp_group.all_gather(prior_sum, dim=0)
-
-                # Online softmax reduction across prior shards
-                num_q_heads = self.num_attention_heads_per_rank  # 8
-                combined_out = all_prior_out[:num_q_heads]
-                combined_neg_max = all_prior_neg_max[:num_q_heads]
-                combined_sum = all_prior_sum[:num_q_heads]
-
-                for r in range(1, self.world_size):
-                    chunk_out = all_prior_out[r * num_q_heads:(r + 1) * num_q_heads]
-                    chunk_neg_max = all_prior_neg_max[r * num_q_heads:(r + 1) * num_q_heads]
-                    chunk_sum = all_prior_sum[r * num_q_heads:(r + 1) * num_q_heads]
-                    combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
-                        combined_out, combined_neg_max, combined_sum,
-                        chunk_out, chunk_neg_max, chunk_sum,
-                    )
-
-                # Reduce with active attention
+                # Combine prior + active locally (no cross-rank gather needed:
+                # each rank's GQA group is independent)
                 combined_out, combined_neg_max, combined_sum = _online_softmax_reduce(
-                    combined_out, combined_neg_max, combined_sum,
+                    prior_out, prior_neg_max, prior_sum,
                     active_out, active_neg_max, active_sum,
                 )
 
