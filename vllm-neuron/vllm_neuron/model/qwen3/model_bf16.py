@@ -1301,8 +1301,12 @@ class Qwen3Model(nn.Module):
 
         # Final norm
         hidden_states = self.norm(hidden_states)
-        if is_prefill and self.world_size > 1:
-            hidden_states = self.tp_group.all_gather(hidden_states, dim=0)
+        if is_decode and self.world_size > 1:
+            pass
+        elif is_prefill and self.world_size > 1:
+            # Skip all-gather during prefill: logits not used for generation.
+            # LM head will operate on local hidden states (produces unused logits).
+            pass
 
         # Eagle3 drafter needs full-sequence aux states (not SP-partitioned)
         if aux_hidden_states and is_prefill and self.world_size > 1:
@@ -1394,8 +1398,11 @@ class Qwen3ForCausalLM(nn.Module, SupportsEagle3):
             is_token_ids,
         )
 
+        # During prefill with SP, hidden_states is local (T/TP tokens).
+        # Clamp sampling_positions to local range since all-gather is skipped.
+        local_sampling_positions = sampling_positions % hidden_states.shape[0]
         hidden_states_for_logits = torch.index_select(
-            hidden_states, dim=0, index=sampling_positions
+            hidden_states, dim=0, index=local_sampling_positions
         )
         logits = self.lm_head(hidden_states_for_logits)
 
