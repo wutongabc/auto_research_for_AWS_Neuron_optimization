@@ -159,6 +159,9 @@ class Qwen3Config:
             filtered["torch_dtype"] = getattr(torch, filtered["torch_dtype"])
 
         filtered["neuron_config"] = neuron_config
+        num_layers_override = int(os.environ.get("VLLM_NEURON_NUM_LAYERS", "0"))
+        if num_layers_override > 0:
+            filtered["num_hidden_layers"] = num_layers_override
         filtered["num_local_experts"] = config_dict.get(
             "num_experts", config_dict.get("num_local_experts", 0)
         )
@@ -1281,8 +1284,6 @@ class Qwen3Model(nn.Module):
         for idx, layer in enumerate(self.layers):
             if idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(hidden_states)
-            if is_prefill and idx % 2 == 1:
-                continue
             hidden_states = layer(
                 hidden_states,
                 positions,

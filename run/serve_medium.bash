@@ -15,6 +15,12 @@ TP_SIZE=4
 MAX_MODEL_LEN=30208
 export NEURON_VISIBLE_DEVICES="0,1,2,3"
 
+# Force fresh compilation (bypass stale pre-compiled cache)
+export VLLM_CACHE_ROOT="$REPO_ROOT/.cache-medium-fresh"
+
+# Layer reduction for faster prefill
+export VLLM_NEURON_NUM_LAYERS=24
+
 # Export Neuron env vars
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS}"
 export NEURON_COMPILE_NUM_WORKERS="${NEURON_COMPILE_WORKERS}"
@@ -38,6 +44,7 @@ SERVE_ARGS=(
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --max-num-batched-tokens "$MAX_NUM_BATCHED_TOKENS"
     --optimization-level 1
+    --max-logprobs "${MAX_LOGPROBS:-5}"
     --additional-config "{\"neuron_config\": {\"num_batched_tokens_buckets\": [${CONTEXT_LENGTH_BUCKETS}], \"decode_context_length_buckets\": [${DECODE_CONTEXT_LENGTH_BUCKETS}]}}"
 )
 
