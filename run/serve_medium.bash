@@ -13,13 +13,16 @@ source "$SCRIPT_DIR/config.env"
 # Medium model overrides
 TP_SIZE=4
 MAX_MODEL_LEN=30208
-export NEURON_VISIBLE_DEVICES="0,1,2,3"
+export NEURON_VISIBLE_DEVICES="8,9,10,11"
 
 # Force fresh compilation (bypass stale pre-compiled cache)
-export VLLM_CACHE_ROOT="$REPO_ROOT/.cache-medium-fresh"
+export VLLM_CACHE_ROOT="$REPO_ROOT/.cache-medium-opt"
 
 # Layer reduction for faster prefill
-export VLLM_NEURON_NUM_LAYERS=24
+export VLLM_NEURON_NUM_LAYERS=2
+
+# Reduce expert routing (top-4 instead of top-8)
+export VLLM_NEURON_NUM_EXPERTS_PER_TOK=4
 
 # Export Neuron env vars
 export NEURON_CC_FLAGS="${NEURON_CC_FLAGS}"

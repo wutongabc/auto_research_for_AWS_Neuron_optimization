@@ -162,12 +162,18 @@ class Qwen3Config:
         num_layers_override = int(os.environ.get("VLLM_NEURON_NUM_LAYERS", "0"))
         if num_layers_override > 0:
             filtered["num_hidden_layers"] = num_layers_override
-        filtered["num_local_experts"] = config_dict.get(
+        num_local_experts = config_dict.get(
             "num_experts", config_dict.get("num_local_experts", 0)
         )
-        filtered["num_experts_per_tok"] = config_dict.get(
-            "num_experts_per_tok", 0
-        )
+        num_experts_override = int(os.environ.get("VLLM_NEURON_NUM_EXPERTS", "0"))
+        if num_experts_override > 0:
+            num_local_experts = num_experts_override
+        filtered["num_local_experts"] = num_local_experts
+        num_experts_per_tok = config_dict.get("num_experts_per_tok", 0)
+        experts_per_tok_override = int(os.environ.get("VLLM_NEURON_NUM_EXPERTS_PER_TOK", "0"))
+        if experts_per_tok_override > 0:
+            num_experts_per_tok = experts_per_tok_override
+        filtered["num_experts_per_tok"] = num_experts_per_tok
         filtered["moe_intermediate_size"] = config_dict.get(
             "moe_intermediate_size", 0
         )
