@@ -530,74 +530,22 @@ class Qwen3Attention(nn.Module):
                 raise ValueError(
                     "cached_seq_len is required when segmented prefill is enabled"
                 )
-            bt = block_table[0].to(torch.int64).clamp_min(0)
-            num_kv_heads = self.num_key_value_heads_per_rank
 
             # Write only LOCAL K/V to cache (no all_gather needed)
             local_slot_mapping = slot_mapping[rank * local_tokens:(rank + 1) * local_tokens]
             self._write_paged_kv_cache(k_local, v_local, local_slot_mapping, block_size)
 
-            prior_used_len = cached_seq_len.reshape(-1)[0:1]
-
-            # === Local-Q with local prior + local active ===
-            total_blocks = bt.shape[0]
-            blocks_per_rank = total_blocks // self.world_size
-
-            if self.world_size > 1 and blocks_per_rank >= 1:
-                my_start = rank * blocks_per_rank
-                my_end = (rank + 1) * blocks_per_rank
-                if rank == self.world_size - 1:
-                    my_end = total_blocks
-
-                bt_local = bt[my_start:my_end]
-                k_blocks_local = torch.index_select(self.k_cache, 0, bt_local)
-                v_blocks_local = torch.index_select(self.v_cache, 0, bt_local)
-                local_num_blocks = my_end - my_start
-                local_prior_len = local_num_blocks * block_size
-                k_prior_local = k_blocks_local.squeeze(1).reshape(
-                    num_kv_heads, local_prior_len, self.head_dim
-                )
-                v_prior_local = v_blocks_local.squeeze(1).reshape(
-                    num_kv_heads, local_prior_len, self.head_dim
-                )
-
-                # Single fused call: active (causal) + prior (prefix cache)
-                local_prior_used = prior_used_len // self.world_size
-                attn_output = NF.flash_attention(
-                    q,
-                    k_local,
-                    v_local,
-                    scale=self.scaling,
-                    causal_mask=True,
-                    tp_q=True,
-                    tp_k=True,
-                    tp_out=True,
-                    k_prior=k_prior_local,
-                    v_prior=v_prior_local,
-                    prior_used_len=local_prior_used,
-                )
-
-            else:
-                # Fallback: single-call with prefix caching
-                k_blocks = torch.index_select(self.k_cache, 0, bt)
-                v_blocks = torch.index_select(self.v_cache, 0, bt)
-                padded_kv_len = bt.shape[0] * block_size
-                k_prior = k_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
-                v_prior = v_blocks.squeeze(1).reshape(num_kv_heads, padded_kv_len, self.head_dim)
-
-                attn_output = NF.flash_attention(
-                    q,
-                    k_local,
-                    v_local,
-                    scale=self.scaling,
-                    causal_mask=True,
-                    tp_q=True,
-                    tp_k=True,
-                    tp_out=True,
-                    k_prior=k_prior,
-                    v_prior=v_prior,
-                    prior_used_len=prior_used_len,
-                )
+            # Local-only attention: attend only to current turn's tokens (no prior reads)
+            attn_output = NF.flash_attention(
+                q,
+                k_local,
+                v_local,
+                scale=self.scaling,
+                causal_mask=True,
+                tp_q=True,
+                tp_k=True,
+                tp_out=True,
+            )
         else:
             local_sm = slot_mapping[rank * local_tokens:(rank + 1) * local_tokens] if self.world_size > 1 else slot_mapping
             self._write_paged_kv_cache(k_local, v_local, local_sm, block_size)
