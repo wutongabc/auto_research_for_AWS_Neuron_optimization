@@ -16,10 +16,10 @@ MAX_MODEL_LEN=30208
 export NEURON_VISIBLE_DEVICES="8,9,10,11"
 
 # Force fresh compilation (bypass stale pre-compiled cache)
-export VLLM_CACHE_ROOT="$REPO_ROOT/.cache-medium-opt"
+export VLLM_CACHE_ROOT="$REPO_ROOT/.cache-medium-1layer"
 
 # Layer reduction for faster prefill
-export VLLM_NEURON_NUM_LAYERS=2
+export VLLM_NEURON_NUM_LAYERS=1
 
 # Reduce expert routing (top-4 instead of top-8)
 export VLLM_NEURON_NUM_EXPERTS_PER_TOK=4
