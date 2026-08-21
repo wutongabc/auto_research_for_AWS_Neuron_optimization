@@ -1,5 +1,7 @@
 # Neuron Prefill Optimization
 
+> **Want to use the optimized image directly?** See [release/README.md](release/README.md) for quick start instructions.
+
 Autonomous optimization loop for LLM prefill throughput on AWS Trainium 2.
 
 Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) — an AI agent iterates on model serving configuration, vLLM model code, and NKI kernels to maximize prefill tok/s.
